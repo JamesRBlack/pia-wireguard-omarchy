@@ -78,6 +78,17 @@ omarchy plugin enable pia.vpn right
 omarchy-restart-shell
 ```
 
+If the icon ever disappears, for example after restoring or resetting the
+bar, the plugin is still installed but disabled. Turn it back on:
+
+```sh
+omarchy plugin enable pia.vpn right
+omarchy-restart-shell
+```
+
+Omarchy Quattro has no waybar: `omarchy-restart-shell` is the way to restart
+the bar.
+
 Left click opens the panel: region, server, the on/off switch and a server
 list with country flags and fuzzy search: type `lon`, `uk lon` or `uklon`,
 then Enter (or click). The current server is in bold white, the rest grey. Flags
