@@ -91,7 +91,9 @@ import json,sys
 for r in json.load(open(sys.argv[1]))["regions"]: print(r["id"], r["name"], r["country"], sep="\t")' \
   "$FIX/servers.json" > "$WORK/regions.tsv"
 stub "$T" pia-nm "cat $WORK/regions.tsv"
-stub "$T" rofi 'grep "(uk)"'
+# Every menu pick knows about gets the stand-in: pick uses the first one
+# installed, and a real walker or rofi would open a window.
+for menu in walker fuzzel wofi rofi; do stub "$T" "$menu" 'grep "(uk)"'; done
 run_toggle pick --quiet
 check "pick switches to the chosen region" "grep -qx 'systemctl start pia-region@uk.service' $WORK/calls"
 
@@ -163,13 +165,12 @@ stub "$I/old" systemctl 'case "$1" in --version) echo "systemd 249 (249.11)";; i
 out=$(PATH=$I/old:$PATH bash -c "$pre"$'\necho PASSED' 2>&1)
 check "stops on systemd 249" "[[ \$out == *'too old'* && \$out != *PASSED* ]]" "$out"
 check "stops when NetworkManager is not running" "[[ \$out == *'not running'* ]]" "$out"
-cp -r "$I/all" "$I/nowg"; rm "$I/nowg/wg"
-if command -v wg >/dev/null 2>&1 && [[ $(command -v wg) != "$I"/* ]]; then
-  skp "names wireguard-tools when wg is missing" "a real wg is installed here"
-else
-  out=$(PATH=$I/nowg:/usr/bin:/bin bash -c "$pre"$'\necho PASSED' 2>&1)
-  check "names wireguard-tools when wg is missing" "[[ \$out == *wireguard-tools* && \$out == *'pacman -S'* && \$out != *PASSED* ]]" "$out"
-fi
+# A PATH of only stand-ins plus the few real tools the check uses, so a real
+# wg elsewhere on the system cannot make this pass.
+mkdir -p "$I/nowg"; cp "$I/all"/* "$I/nowg/"; rm "$I/nowg/wg"
+for t in awk; do ln -sf "$(command -v $t)" "$I/nowg/$t"; done
+out=$(PATH=$I/nowg "$BASH" -c "$pre"$'\necho PASSED' 2>&1)
+check "names wireguard-tools when wg is missing" "[[ \$out == *wireguard-tools* && \$out == *'pacman -S'* && \$out != *PASSED* ]]" "$out"
 
 # ---------------------------------------------------------------------------
 section "pia-nm --set-region (private mount namespace)"

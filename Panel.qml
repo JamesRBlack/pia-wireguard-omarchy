@@ -51,6 +51,7 @@ Panel {
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
+  readonly property color connectedColor: "#4ade80"
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   // Server rows read a step larger than the panel's small body text.
   readonly property int serverFontSize: Math.round(Style.font.bodySmall * 1.12)
@@ -457,7 +458,7 @@ Panel {
               }
 
               Text {
-                width: parent.width - Style.space(24) - parent.spacing
+                width: parent.width - Style.space(24) - Style.space(20) - 2 * parent.spacing
                 text: root.shortName(row.modelData)
                 color: row.current ? "white" : root.dim
                 font.pixelSize: root.serverFontSize
@@ -466,6 +467,19 @@ Panel {
                 font.bold: row.current
                 font.family: root.fontFamily
                 elide: Text.ElideRight
+              }
+
+              // Only on the selected server: a green cloud with a tick while
+              // connected, a red crossed-out cloud otherwise (off, connecting
+              // or dropped). Its own fixed-width column, so names never move.
+              Text {
+                width: Style.space(20)
+                horizontalAlignment: Text.AlignRight
+                visible: row.current
+                text: root.vpnState === "on" ? "󱋌" : "󰅤"
+                color: root.vpnState === "on" ? root.connectedColor : root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: root.serverFontSize
               }
             }
 
