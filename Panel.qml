@@ -12,11 +12,14 @@ import "Fuzzy.js" as Fuzzy
 // Status comes from `pia-toggle --status` (the same JSON a bar module reads).
 Panel {
   id: root
-  moduleName: "pia.vpn"
-  ipcTarget: "pia.vpn"
+  moduleName: "jamesrblack.pia"
+  ipcTarget: "jamesrblack.pia"
   manageIpc: false
 
   readonly property string toggleCmd: "/usr/local/bin/pia-toggle"
+  // The widget only displays and drives the system part (services, killswitch,
+  // pia-toggle), which a marketplace install does not include.
+  readonly property string setupHint: "The VPN itself is not installed. Run ./install.sh from github.com/JamesRBlack/pia-wireguard-omarchy, then restart the shell."
 
   // "on" | "blocked" | "off" | "" (not read yet)
   property string vpnState: ""
@@ -167,7 +170,7 @@ Panel {
     onExited: function(exitCode) {
       // A failed poll must not read as "off": keep the last state, say why.
       if (exitCode === 0) root.applyStatus(statusStdout.text)
-      else root.lastError = "pia-toggle --status failed (is it installed in /usr/local/bin?)"
+      else root.lastError = root.setupHint
     }
   }
 
@@ -281,7 +284,7 @@ Panel {
           PanelHero {
             id: hero
             width: parent.width
-            title: "PIA VPN"
+            title: "PIA WireGuard"
             meta: root.vpnState === "on" ? (root.detailLines[0] || "Connected").replace(/^PIA /, "")
               : (root.vpnState === "blocked" ? "Connecting: traffic blocked" : "Off")
             foreground: root.foreground

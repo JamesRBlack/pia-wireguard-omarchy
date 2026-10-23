@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "pia.vpn",
-  "name": "PIA VPN",
+  "id": "jamesrblack.pia",
+  "name": "PIA WireGuard (unofficial)",
   "version": "1.0.0",
-  "author": "pia-vpn contributors",
+  "author": "JamesRBlack",
   "license": "MIT",
-  "description": "PIA WireGuard status, server and killswitch in the Omarchy bar. Drives pia-toggle, so every connect gets a fresh key and the killswitch stays in step.",
+  "description": "Unofficial Private Internet Access WireGuard widget: status, killswitch, server list with search and flags. Needs the system part from the repo's install.sh. Not affiliated with Private Internet Access.",
   "kinds": [
     "bar-widget"
   ],
@@ -13,8 +13,8 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "PIA VPN",
-    "description": "Left click: details and switch. Right click: toggle the VPN. Middle click: refresh.",
+    "displayName": "PIA WireGuard (unofficial)",
+    "description": "Left click: status, on/off and a searchable server list. Right click: toggle the VPN. Middle click: refresh. Requires install.sh from the repo.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",

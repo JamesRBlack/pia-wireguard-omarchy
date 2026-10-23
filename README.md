@@ -9,6 +9,9 @@ Written for Arch / Omarchy (Hyprland, ufw, Docker, libvirt all fine alongside
 it); any distribution with NetworkManager, systemd 250+ and nftables should
 work.
 
+Unofficial: not affiliated with or endorsed by Private Internet Access. You
+need your own PIA subscription.
+
 ## Is this your problem?
 
 - You imported a PIA WireGuard `.conf` into NetworkManager (`nmcli connection
@@ -40,7 +43,7 @@ connect, so that never happens.
 | `pia-region@.service` | Saves a region and reconnects; the only root step behind switching server without a password |
 | `pia-watchdog.timer` | Every minute: reconnects with a new key if the tunnel is down, stale or passes no traffic |
 | `pia-toggle` | VPN + killswitch on/off together, no password (polkit rule `50-pia.rules`); `--status` prints JSON for a bar |
-| `manifest.json`, `Panel.qml`, `Fuzzy.js` | Omarchy bar widget `pia.vpn`: status, server list with search and flags, click to toggle. At the top level so `omarchy plugin add` can install straight from this repo |
+| `manifest.json`, `Panel.qml`, `Fuzzy.js` | Omarchy bar widget `jamesrblack.pia`: status, server list with search and flags, click to toggle. At the top level so `omarchy plugin add` can install straight from this repo |
 
 [docs/HOW-IT-WAS-BUILT.md](docs/HOW-IT-WAS-BUILT.md) records every problem hit
 on the way (expiring keys, the killswitch design, a half-finished installer,
@@ -71,20 +74,22 @@ it at boot.
 
 ### Bar: Omarchy (Quattro and later)
 
-After `./install.sh` (the widget only displays and drives what it installs):
+After `./install.sh`. The widget only displays and drives what the installer
+sets up, so installing the widget alone (for example from the Omarchy plugin
+marketplace) shows a "not installed" message until `./install.sh` has run.
 
 ```sh
 omarchy plugin add https://github.com/JamesRBlack/pia-wireguard-omarchy.git --enable
 omarchy-restart-shell
 ```
 
-Updates later: `omarchy plugin update pia.vpn`.
+Updates later: `omarchy plugin update jamesrblack.pia`.
 
 If the icon ever disappears, for example after restoring or resetting the
 bar, the plugin is still installed but disabled. Turn it back on:
 
 ```sh
-omarchy plugin enable pia.vpn right
+omarchy plugin enable jamesrblack.pia right
 omarchy-restart-shell
 ```
 
@@ -178,7 +183,7 @@ tunnels; this repository exists because PIA's keys expire.
 
 ```sh
 pia-toggle off
-omarchy plugin disable pia.vpn
+omarchy plugin disable jamesrblack.pia
 sudo systemctl disable --now pia-watchdog.timer pia-vpn pia-killswitch
 sudo rm -f /usr/local/bin/pia-{nm,killswitch,toggle} /etc/systemd/system/pia-* \
   /etc/polkit-1/rules.d/50-pia.rules
