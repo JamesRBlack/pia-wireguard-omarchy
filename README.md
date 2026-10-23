@@ -67,10 +67,20 @@ TPM when there is one) and decrypted only for `pia-vpn` and the watchdog.
 
 ## Install
 
-Needs `curl jq wireguard-tools networkmanager nftables` (on Arch:
-`sudo pacman -S --needed curl jq wireguard-tools networkmanager nftables`).
-Do not enable `nftables.service`: its default config flushes ufw's and
-Docker's rules.
+Requirements:
+
+- **NetworkManager managing your network** (running, not just installed). The
+  tunnel is a NetworkManager connection. Setups that use iwd or
+  systemd-networkd on their own need to switch first.
+- **systemd 250 or newer**, for the encrypted credentials.
+- `curl jq wireguard-tools nftables` and `column` (util-linux). On Arch:
+  `sudo pacman -S --needed curl jq wireguard-tools networkmanager nftables`.
+- A PIA subscription.
+
+`install.sh` checks all of this first and changes nothing if anything is
+missing; it prints the install command for your package manager (pacman, apt
+or dnf). Do not enable `nftables.service`: its default config flushes ufw's
+and Docker's rules.
 
 ```sh
 git clone https://github.com/JamesRBlack/pia-wireguard-omarchy.git
