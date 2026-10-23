@@ -7,7 +7,6 @@
 set -euo pipefail
 [[ $EUID == 0 ]] || exec sudo "$0" "$@"
 user=${SUDO_USER:?run it from your own account, not a root shell}
-home=$(getent passwd "$user" | cut -d: -f6)
 cd "$(dirname "$0")"
 
 missing=()
@@ -19,6 +18,17 @@ if (( ${#missing[@]} )); then
   echo "install with: sudo pacman -S --needed ${missing[*]}"
   echo "(do not enable nftables.service: its default config wipes ufw's and Docker's rules)"
   exit 1
+fi
+
+# pia-nm owns the NetworkManager profile "pia" and recreates it on every
+# connect. On a first install, a profile of that name belongs to someone else:
+# ask before it gets replaced.
+if [[ ! -f /etc/pia/pia.env ]] && nmcli -t -f NAME connection show 2>/dev/null | grep -qx pia; then
+  echo "A NetworkManager connection named \"pia\" already exists. pia-nm replaces it"
+  echo "with its own on every connect. Export it first if you want to keep it:"
+  echo "  nmcli connection export pia > ~/pia-backup.conf   (WireGuard/VPN profiles)"
+  read -rp "Replace it when the VPN connects? [y/N] " answer
+  [[ $answer == [yY]* ]] || { echo "nothing installed"; exit 1; }
 fi
 
 install -m 755 pia-nm pia-killswitch pia-toggle /usr/local/bin/
@@ -58,9 +68,8 @@ encrypt() { ( umask 077; systemd-creds encrypt --name=pia "$1" "$CRED" ); }
 [[ ${1:-} == --credentials ]] && rm -f "$CRED"
 if [[ ! -f $CRED ]]; then
   plain=""
-  for f in /etc/pia/credentials "$home/.config/pia/credentials"; do
-    [[ -f $f ]] && { plain=$f; break; }
-  done
+  # A plain-text file from an earlier version of this installer.
+  [[ -f /etc/pia/credentials ]] && plain=/etc/pia/credentials
   if [[ -n $plain && ${1:-} != --credentials ]]; then
     encrypt "$plain"
     echo "encrypted $plain into $CRED"
@@ -71,17 +80,13 @@ if [[ ! -f $CRED ]]; then
   fi
   # Plain-text copies would defeat the point. shred cannot guarantee an SSD
   # forgets the old blocks; full-disk encryption covers that.
-  for f in /etc/pia/credentials "$home/.config/pia/credentials"; do
-    [[ -f $f ]] && shred -u "$f" && echo "removed plain-text $f"
-  done
+  if [[ -f /etc/pia/credentials ]]; then
+    shred -u /etc/pia/credentials && echo "removed plain-text /etc/pia/credentials"
+  fi
 fi
 systemctl daemon-reload
 systemctl enable --now pia-watchdog.timer
 
-if [[ -f $home/.local/bin/pia-nm ]]; then
-  rm -f "$home/.local/bin/pia-nm"
-  echo "removed the old $home/.local/bin/pia-nm (the new one is in /usr/local/bin)"
-fi
 echo
 echo "installed. Settings: /etc/pia/pia.env"
 echo "  pia-toggle            VPN + killswitch on/off"

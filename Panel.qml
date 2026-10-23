@@ -10,6 +10,9 @@ import "Fuzzy.js" as Fuzzy
 // which starts or stops pia-vpn.service and the killswitch together, so the
 // widget can never bring up a stale key or leave the killswitch out of step.
 // Status comes from `pia-toggle --status` (the same JSON a bar module reads).
+//
+// Parts adapted from Omawire, Copyright (c) 2026 glafeara, MIT licence
+// (https://github.com/glafeara/omarchy-wireguard); see THIRD-PARTY-NOTICES.md.
 Panel {
   id: root
   moduleName: "jamesrblack.pia"

@@ -43,6 +43,7 @@ connect, so that never happens.
 | `pia-region@.service` | Saves a region and reconnects; the only root step behind switching server without a password |
 | `pia-watchdog.timer` | Every minute: reconnects with a new key if the tunnel is down, stale or passes no traffic |
 | `pia-toggle` | VPN + killswitch on/off together, no password (polkit rule `50-pia.rules`); `--status` prints JSON for a bar |
+| `THIRD-PARTY-NOTICES.md` | Licence notice for the code adapted from Omawire |
 | `manifest.json`, `Panel.qml`, `Fuzzy.js` | Omarchy bar widget `jamesrblack.pia`: status, server list with search and flags, click to toggle. At the top level so `omarchy plugin add` can install straight from this repo |
 
 [docs/HOW-IT-WAS-BUILT.md](docs/HOW-IT-WAS-BUILT.md) records every problem hit
@@ -174,10 +175,11 @@ curl -4 -s --max-time 5 https://ifconfig.me || echo BLOCKED   # watchdog reconne
 
 ## Credits
 
-The Omarchy panel follows the structure of
-[Omawire](https://github.com/glafeara/omarchy-wireguard) (MIT), a general
-WireGuard widget for the Omarchy bar. Use Omawire for ordinary WireGuard
-tunnels; this repository exists because PIA's keys expire.
+The Omarchy panel adapts parts of
+[Omawire](https://github.com/glafeara/omarchy-wireguard) by glafeara (MIT): its
+bar button, panel setup and the way it runs commands. Its licence notice is in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Use Omawire for ordinary
+WireGuard tunnels; this repository exists because PIA's keys expire.
 
 ## Undo
 
