@@ -25,6 +25,17 @@ need your own PIA subscription.
 
 Then this is for you.
 
+## How this differs from other PIA widgets
+
+Other PIA widgets for Omarchy are front ends for PIA's official desktop client
+(`piavpn-bin` and its `piactl` command). This one does not use that client at
+all: no proprietary daemon or GUI. It talks to PIA's API itself (the same calls
+as PIA's open-source manual-connections scripts), runs the tunnel through
+NetworkManager, and brings its own nftables killswitch and watchdog. Pick it if
+the official client misbehaves on your desktop or you would rather not run
+closed-source software as root. If you already run the official client happily,
+a `piactl` widget is the simpler choice.
+
 ## Why it happens
 
 PIA does not hand out permanent WireGuard configs: a registered key is
