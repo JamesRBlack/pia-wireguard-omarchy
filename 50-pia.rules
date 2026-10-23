@@ -1,0 +1,14 @@
+// Lets @USER@ start and stop the VPN and killswitch, and switch region,
+// without a password, so pia-toggle works from a keybinding or a bar.
+polkit.addRule(function(action, subject) {
+    var unit = action.lookup("unit");
+    var verb = action.lookup("verb");
+    if (action.id != "org.freedesktop.systemd1.manage-units" || subject.user != "@USER@")
+        return polkit.Result.NOT_HANDLED;
+    if ((unit == "pia-vpn.service" || unit == "pia-killswitch.service") &&
+        (verb == "start" || verb == "stop" || verb == "restart"))
+        return polkit.Result.YES;
+    // pia-nm validates the id again before using it.
+    if (/^pia-region@[a-z0-9_-]+\.service$/.test(unit) && verb == "start")
+        return polkit.Result.YES;
+});

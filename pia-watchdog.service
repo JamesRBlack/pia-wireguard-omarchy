@@ -1,0 +1,7 @@
+[Unit]
+Description=Reconnect PIA with a new key if the tunnel is down or stale
+
+[Service]
+Type=oneshot
+LoadCredentialEncrypted=pia:/etc/pia/credentials.cred
+ExecStart=/usr/local/bin/pia-nm --check

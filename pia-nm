@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# Registers a fresh WireGuard key with PIA, rebuilds the NetworkManager profile
+# "pia" from it and connects. PIA forgets registered keys after a while, which
+# is why a once-imported config stops handshaking. Normally run by
+# pia-vpn.service (pia-toggle starts and stops it), not by hand.
+#
+# Usage: pia-nm connect              connect using /etc/pia/pia.env
+#        pia-nm <region-id> [--pihole]   connect to a region (--pihole: LAN DNS, not PIA's)
+#        pia-nm --check              reconnect if the tunnel is down or stale (watchdog)
+#        pia-nm --list               list region ids
+#        pia-nm --set-region <id>    save a region and reconnect if connected
+#                                    (pia-region@<id>.service runs this)
+#        pia-nm --down               disconnect
+#
+# Settings: /etc/pia/pia.env (REGION, PIHOLE). Credentials: PIA_USER=... and
+# PIA_PASS=..., encrypted in /etc/pia/credentials.cred (systemd-creds, decrypted
+# only for the services), or /etc/pia/credentials, or you are prompted.
+# Needs curl, jq, wg (wireguard-tools) and nmcli; nft when the killswitch is on.
+set -euo pipefail
+
+CONN=pia
+KS_TABLE="inet pia_ks"
+CONF_DIR=/etc/pia
+CA=$CONF_DIR/ca.rsa.4096.crt
+CA_URL=https://raw.githubusercontent.com/pia-foss/manual-connections/master/ca.rsa.4096.crt
+SERVERS_URL=https://serverlist.piaservers.net/vpninfo/servers/v6
+TOKEN_URL=https://www.privateinternetaccess.com/api/client/v2/token
+# A handshake older than this means the server stopped answering. WireGuard
+# re-handshakes every 2 minutes while traffic flows, and keepalive keeps it flowing.
+STALE_SECONDS=300
+# What the bar shows: region and server, no secrets. Readable by everyone.
+STATUS=/run/pia/status
+# Region list for the bar's server picker, refreshed whenever pia-nm reads the
+# server list. It is there even while the killswitch blocks a live fetch.
+REGIONS=/run/pia/regions
+
+die() { printf 'pia-nm: %s\n' "$*" >&2; exit 1; }
+log() { printf 'pia-nm: %s\n' "$*"; }
+for c in curl jq wg nmcli; do command -v "$c" >/dev/null || die "$c not found"; done
+
+ks_on() { [[ $EUID == 0 ]] && command -v nft >/dev/null && nft list table $KS_TABLE >/dev/null 2>&1; }
+
+# With the killswitch on, nothing leaves except through the tunnel, so PIA's own
+# API hosts are let through for a few minutes while a new key is fetched.
+allow_host() {
+  ks_on || return 0
+  local ips
+  ips=$(getent ahostsv4 "$1" | awk '{print $1}' | sort -u | paste -sd, -)
+  [[ -n $ips ]] || die "could not resolve $1"
+  nft add element $KS_TABLE api "{ $ips }"
+}
+
+# The server list is one line of JSON followed by a signature. Read whole and
+# cut afterwards: piping curl into head can kill curl mid-write (SIGPIPE).
+servers() {
+  allow_host serverlist.piaservers.net
+  local json
+  json=$(curl -fsS --connect-timeout 15 "$SERVERS_URL") || return 1
+  json=${json%%$'\n'*}
+  if [[ $EUID == 0 ]]; then
+    install -d -m 755 "${REGIONS%/*}"
+    jq -r '.regions[] | select(.servers.wg) | "\(.id)\t\(.name)\t\(.country // "")"' <<<"$json" |
+      sort -t $'\t' -k2 > "$REGIONS.tmp" && chmod 644 "$REGIONS.tmp" && mv "$REGIONS.tmp" "$REGIONS"
+  fi
+  printf '%s\n' "$json"
+}
+
+down() {
+  nmcli connection down "$CONN" >/dev/null 2>&1 || true
+  rm -f "$STATUS"
+  if ks_on; then nft flush set $KS_TABLE servers; fi
+}
+
+connect() {
+  local region=$1 pihole=$2
+  install -d -m 755 "$CONF_DIR"
+  # Under the services, systemd decrypts /etc/pia/credentials.cred into a
+  # private in-memory directory that only this process can read.
+  local creds=$CONF_DIR/credentials
+  [[ -f ${CREDENTIALS_DIRECTORY:-/nonexistent}/pia ]] && creds=$CREDENTIALS_DIRECTORY/pia
+  [[ -f $creds ]] && source "$creds"
+  [[ -n ${PIA_USER:-} ]] || read -rp "PIA username: " PIA_USER
+  [[ -n ${PIA_PASS:-} ]] || { read -rsp "PIA password: " PIA_PASS; echo; }
+  if [[ ! -f $CA ]]; then
+    allow_host raw.githubusercontent.com
+    curl -fsS --connect-timeout 15 -o "$CA" "$CA_URL" || die "could not fetch PIA's CA certificate"
+  fi
+
+  # A stale profile routes everything into a dead tunnel, which would also cut
+  # off the API calls below.
+  down
+
+  allow_host www.privateinternetaccess.com
+  local token
+  token=$(curl -fsS --connect-timeout 15 -X POST "$TOKEN_URL" \
+    --form "username=$PIA_USER" --form "password=$PIA_PASS" | jq -r '.token // empty')
+  [[ -n $token ]] || die "login failed (check username/password)"
+
+  local wg_ip wg_cn region_name
+  read -r wg_ip wg_cn region_name < <(servers | jq -r --arg r "$region" \
+    '.regions[] | select(.id == $r) | "\(.servers.wg[0].ip) \(.servers.wg[0].cn) \(.name)"') || true
+  [[ -n ${wg_ip:-} && $wg_ip != null ]] || die "no WireGuard server for region '$region' (try --list)"
+  if ks_on; then nft add element $KS_TABLE servers "{ $wg_ip }"; fi
+
+  umask 077
+  local priv pub resp
+  # Global, not local: the EXIT trap runs after this function has returned.
+  work=$(mktemp -d)
+  trap 'rm -rf "${work:-}"' EXIT
+  priv=$(wg genkey)
+  pub=$(wg pubkey <<<"$priv")
+
+  # The API's certificate is issued to the server's common name, not its IP.
+  resp=$(curl -fsS --connect-timeout 15 -G \
+    --connect-to "$wg_cn::$wg_ip:" --cacert "$CA" \
+    --data-urlencode "pt=$token" --data-urlencode "pubkey=$pub" \
+    "https://$wg_cn:1337/addKey")
+  [[ $(jq -r '.status' <<<"$resp") == OK ]] || die "addKey refused: $resp"
+
+  # nmcli names the imported connection after the file, so it must be pia.conf.
+  {
+    echo "[Interface]"
+    echo "Address = $(jq -r '.peer_ip' <<<"$resp")"
+    echo "PrivateKey = $priv"
+    [[ $pihole == 1 ]] || echo "DNS = $(jq -r '.dns_servers[0]' <<<"$resp")"
+    echo
+    echo "[Peer]"
+    echo "PublicKey = $(jq -r '.server_key' <<<"$resp")"
+    echo "AllowedIPs = 0.0.0.0/0"
+    echo "Endpoint = $wg_ip:$(jq -r '.server_port' <<<"$resp")"
+    echo "PersistentKeepalive = 25"
+  } > "$work/$CONN.conf"
+
+  nmcli connection delete "$CONN" >/dev/null 2>&1 || true
+  nmcli connection import type wireguard file "$work/$CONN.conf" >/dev/null
+  # Autoconnect stays off: pia-vpn.service decides when the tunnel is up, so
+  # NetworkManager never brings up a profile whose key may have expired.
+  nmcli connection modify "$CONN" connection.autoconnect no ipv6.method disabled
+  nmcli connection up "$CONN" >/dev/null
+
+  # Prove the tunnel works rather than trusting "activated".
+  for _ in 1 2 3 4 5; do
+    if curl -fsS --max-time 5 -o /dev/null https://1.1.1.1; then
+      log "connected to $region ($wg_cn)"
+      install -d -m 755 "${STATUS%/*}"
+      printf 'REGION=%q\nNAME=%q\nSERVER=%q\nENDPOINT=%q\nSINCE=%q\n' \
+        "$region" "$region_name" "$wg_cn" "$wg_ip" "$(date +%H:%M)" > "$STATUS"
+      chmod 644 "$STATUS"
+      return 0
+    fi
+    sleep 2
+  done
+  down
+  die "tunnel came up but no traffic passes"
+}
+
+load_env() {
+  REGION="" PIHOLE=0
+  [[ -f $CONF_DIR/pia.env ]] && source "$CONF_DIR/pia.env"
+  [[ -n $REGION ]] || die "no REGION in $CONF_DIR/pia.env (pick one from: pia-nm --list)"
+}
+
+case ${1:-} in
+  --list) servers | jq -r '.regions[] | select(.servers.wg) | "\(.id)\t\(.name)\t\(.country // "")"' | sort -t $'\t' -k2 ;;
+  --down) down ;;
+  --set-region)
+    id=${2:-}
+    # The id reaches sed and a unit name, so only what PIA's ids look like.
+    [[ $id =~ ^[a-z0-9_-]{1,40}$ ]] || die "not a region id: '$id'"
+    servers | jq -e --arg r "$id" '.regions[] | select(.id == $r and .servers.wg)' >/dev/null ||
+      die "no WireGuard region '$id' (try --list)"
+    if grep -q '^REGION=' "$CONF_DIR/pia.env"; then
+      sed -i "s|^REGION=.*|REGION=$id|" "$CONF_DIR/pia.env"
+    else
+      echo "REGION=$id" >> "$CONF_DIR/pia.env"
+    fi
+    log "region set to $id"
+    # A restart keeps the killswitch: it is its own unit, and only stopping it
+    # takes the VPN down, never the other way round.
+    if systemctl is-active --quiet pia-vpn.service; then systemctl restart --no-block pia-vpn.service; fi ;;
+  --check)
+    systemctl is-active --quiet pia-vpn.service || exit 0
+    load_env
+    # An interface that exists but is switched off counts as down.
+    if ! ip -o link show "$CONN" 2>/dev/null | grep -q '[<,]UP[,>]'; then
+      log "tunnel is down, reconnecting with a new key"
+      connect "$REGION" "$PIHOLE"
+      exit
+    fi
+    hs=$(wg show "$CONN" latest-handshakes | awk '{print $2}')
+    age=$(( $(date +%s) - ${hs:-0} ))
+    if [[ ${hs:-0} == 0 || $age -gt $STALE_SECONDS ]]; then
+      log "last handshake ${age}s ago, reconnecting with a new key"
+      connect "$REGION" "$PIHOLE"
+      exit
+    fi
+    # A server can keep handshaking yet pass nothing; ask the internet directly.
+    for _ in 1 2; do
+      curl -fsS --max-time 5 -o /dev/null https://1.1.1.1 && exit 0
+      sleep 3
+    done
+    log "no traffic passes through the tunnel, reconnecting with a new key"
+    connect "$REGION" "$PIHOLE" ;;
+  connect) load_env; connect "$REGION" "$PIHOLE" ;;
+  ''|-*)  sed -n '7,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) pihole=0; [[ ${2:-} == --pihole ]] && pihole=1; connect "$1" "$pihole" ;;
+esac

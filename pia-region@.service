@@ -1,0 +1,7 @@
+[Unit]
+Description=Switch PIA to region %i and reconnect
+# %i, not %I: region ids contain "-", which %I would turn into "/".
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pia-nm --set-region %i

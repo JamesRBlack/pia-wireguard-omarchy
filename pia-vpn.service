@@ -1,0 +1,21 @@
+[Unit]
+Description=PIA WireGuard VPN (fresh key on every connect)
+# Stopping the killswitch takes the VPN down with it; never the other way round.
+Requires=pia-killswitch.service
+After=pia-killswitch.service NetworkManager.service network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+LoadCredentialEncrypted=pia:/etc/pia/credentials.cred
+ExecStart=/usr/local/bin/pia-nm connect
+ExecStop=/usr/local/bin/pia-nm --down
+# A failed connect leaves the killswitch on and tries again.
+Restart=on-failure
+RestartSec=20
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

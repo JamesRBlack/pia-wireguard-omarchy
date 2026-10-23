@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# Turns the VPN and its killswitch on or off together. No password needed
+# (polkit rule 50-pia.rules). For a Hyprland keybinding or the Omarchy bar widget.
+# Usage: pia-toggle [on | off | --status] [--quiet]
+#        pia-toggle region <id>     switch server (connects if off)
+#        pia-toggle pick            choose a server from a menu (walker, fuzzel, wofi, rofi)
+#        pia-toggle --regions       list "id<TAB>name<TAB>country code"
+# --quiet: no notifications except failures (the bar widget uses it; its icon
+# already shows the state).
+set -uo pipefail
+
+QUIET=0
+args=()
+for a in "$@"; do
+  case $a in -q|--quiet) QUIET=1 ;; *) args+=("$a") ;; esac
+done
+set -- ${args[@]+"${args[@]}"}
+
+state() { systemctl is-active pia-vpn.service 2>/dev/null; }
+# Failures pass -u critical and are shown even with --quiet.
+notify() {
+  [[ $QUIET == 1 && ${1:-} != -u ]] && return 0
+  command -v notify-send >/dev/null && notify-send -a "PIA VPN" "$@"
+}
+refresh_bar() { pkill -RTMIN+9 waybar 2>/dev/null || true; }
+
+# systemctl errors (a refused polkit check, say) go to the notification and to
+# stderr, never swallowed: a "VPN off" toast must mean the VPN is off.
+fail() {
+  notify -u critical "$1" "$2"
+  printf 'pia-toggle: %s: %s\n' "$1" "$2" >&2
+  refresh_bar
+  exit 1
+}
+
+on() {
+  local err
+  err=$(systemctl start --no-block pia-vpn.service 2>&1) || fail "Could not turn the VPN on" "$err"
+  notify "VPN connecting" "Traffic is blocked until the tunnel is up"
+  refresh_bar
+  await_up
+}
+
+off() {
+  local err
+  # One unit per call: a multi-unit stop reaches polkit without a "unit"
+  # detail, so the rule that allows these two units cannot match it. The VPN
+  # goes first, so the killswitch still holds while the tunnel closes.
+  err=$(systemctl stop pia-vpn.service 2>&1) || fail "Could not turn the VPN off" "$err"
+  err=$(systemctl stop pia-killswitch.service 2>&1) || fail "Could not turn the killswitch off" "$err"
+  [[ $(systemctl is-active pia-killswitch.service) != active ]] ||
+    fail "VPN still on" "The killswitch is still active after stopping it"
+  notify "VPN off" "Normal connection, no killswitch"
+  refresh_bar
+}
+
+# Waits in the background for the tunnel (optionally on region $1) so a
+# keybinding returns at once.
+await_up() {
+  (
+    sleep 3
+    for _ in $(seq 1 60); do
+      if [[ $(state) == active ]] && { [[ -z ${1:-} ]] || grep -qx "REGION=$1" /run/pia/status 2>/dev/null; }; then
+        notify "VPN on" "$(where), killswitch on"; refresh_bar; exit
+      fi
+      [[ $(state) == failed ]] && break
+      sleep 2
+    done
+    notify -u critical "VPN not connected" "Still retrying; traffic stays blocked. pia-toggle off restores normal internet."
+    refresh_bar
+  ) &
+}
+
+regions() {
+  if [[ -s /run/pia/regions ]]; then cat /run/pia/regions; else pia-nm --list; fi
+}
+
+region_name() { regions 2>/dev/null | awk -F'\t' -v id="$1" '$1 == id {print $2; exit}'; }
+
+# pia-region@<id> (root, via polkit) validates the id, saves it and reconnects;
+# the killswitch stays up throughout.
+region() {
+  local id=${1:-} err
+  [[ $id =~ ^[a-z0-9_-]{1,40}$ ]] || fail "Not a region id" "'$id' (see pia-toggle --regions)"
+  err=$(systemctl start "pia-region@$id.service" 2>&1) || fail "Could not switch server" "$err"
+  if [[ $(systemctl is-active pia-killswitch.service) != active ]]; then on; return; fi
+  notify "Switching to $(region_name "$id")" "Traffic is blocked until the new tunnel is up"
+  refresh_bar
+  await_up "$id"
+}
+
+pick() {
+  local menu="" m choice
+  for m in "walker --dmenu" "fuzzel --dmenu" "wofi --dmenu" "rofi -dmenu -i"; do
+    command -v "${m%% *}" >/dev/null && { menu=$m; break; }
+  done
+  [[ -n $menu ]] || fail "No menu program" "Install walker, fuzzel, wofi or rofi, or use: pia-toggle region <id>"
+  choice=$(regions | awk -F'\t' '{print $2 "  (" $1 ")"}' | $menu) || exit 0
+  [[ -n $choice ]] || exit 0
+  choice=${choice##*(}
+  region "${choice%)}"
+}
+
+# "<region name> (<server>)", from the file pia-nm writes on connect.
+where() {
+  ( NAME="" SERVER=""; . /run/pia/status 2>/dev/null; echo "${NAME:-PIA} (${SERVER:-?})" )
+}
+
+status() {
+  local ks text class tip
+  ks=$(systemctl is-active pia-killswitch.service 2>/dev/null)
+  # "on" needs the tunnel itself to be up, not just the service.
+  local up=0
+  ip -o link show pia 2>/dev/null | grep -q '[<,]UP[,>]' && up=1
+  case $(state)/$up in
+    active/1)
+      local NAME="" SERVER="" ENDPOINT="" SINCE=""
+      . /run/pia/status 2>/dev/null || true
+      text="VPN ${NAME:-on}"; class=on
+      tip="PIA ${NAME}\\n${SERVER} (${ENDPOINT})\\nsince ${SINCE}, killswitch on" ;;
+    *) if [[ $ks == active ]]; then text="VPN …"; class=blocked; tip="Connecting: traffic blocked until the tunnel is up"
+       else text="VPN off"; class=off; tip="Not using the VPN"; fi ;;
+  esac
+  # The configured region, connected or not, so a picker can mark it.
+  local region
+  region=$(REGION=""; . /etc/pia/pia.env 2>/dev/null; echo "$REGION")
+  printf '{"text":"%s","class":"%s","tooltip":"%s","region":"%s"}\n' "$text" "$class" "$tip" "$region"
+}
+
+case ${1:-toggle} in
+  on) on ;;
+  off) off ;;
+  --status) status ;;
+  --regions) regions ;;
+  region) region "${2:-}" ;;
+  pick) pick ;;
+  toggle) if [[ $(systemctl is-active pia-killswitch.service) == active ]]; then off; else on; fi ;;
+  *) sed -n '4,7p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac
