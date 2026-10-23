@@ -57,6 +57,7 @@ off() {
 # Waits in the background for the tunnel (optionally on region $1) so a
 # keybinding returns at once.
 await_up() {
+  [[ ${PIA_TOGGLE_NO_WAIT:-} == 1 ]] && return 0   # tests
   (
     sleep 3
     for _ in $(seq 1 60); do

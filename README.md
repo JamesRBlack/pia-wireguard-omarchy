@@ -194,6 +194,18 @@ sudo ip link set pia down                         # simulate a drop: traffic blo
 curl -4 -s --max-time 5 https://ifconfig.me || echo BLOCKED   # watchdog reconnects within a minute
 ```
 
+## Development
+
+```sh
+tests/run.sh        # 57 regression tests; nothing touches the real system
+```
+
+They run the scripts against stand-in commands, a fixture of PIA's region
+list, and private mount/network namespaces for `pia-nm` and the killswitch.
+Python 3 is required; node, jq, nft and passwordless sudo enable the rest
+(missing ones are skipped and reported). `tools/check-qml.py Panel.qml`
+catches a QML property set twice, which makes the shell refuse the widget.
+
 ## Credits
 
 The Omarchy panel adapts parts of
