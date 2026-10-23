@@ -272,6 +272,25 @@ out of line. Now the flag sits in a fixed-width column, there is no marker,
 and the current server is simply white while the rest are grey; with a flag
 shown, the redundant "UK " prefix is dropped from the name.
 
+## 13. A widget the shell refused to load
+
+Making the server names larger added a second `font.pixelSize:` to the name
+`Text` instead of replacing the first. The shell skipped the widget entirely,
+and only its log said why:
+
+```
+Plugin widget pia.vpn failed: Panel.qml:462:17: Property value set multiple times
+```
+
+`qmllint` without the shell's own modules does not report this, so
+`tools/check-qml.py` does: it flags any property bound twice in one QML
+object. Run it before every change to the widget. Checking the shell log is
+the quickest way to see why a widget does not appear:
+
+```sh
+journalctl --user --since "10 min ago" | grep -iE 'pia|qml'
+```
+
 ## Final checks (all passed)
 
 | Check | Result |

@@ -459,7 +459,6 @@ Panel {
                 // at the same x as every other row.
                 font.bold: row.current
                 font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
                 elide: Text.ElideRight
               }
             }
