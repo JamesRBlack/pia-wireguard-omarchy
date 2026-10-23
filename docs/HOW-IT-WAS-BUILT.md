@@ -194,7 +194,9 @@ The catalog had no VPN plugin. Omawire (`glafeara/omarchy-wireguard`) was
 reviewed: clean code, no root, no network calls beyond a ping, but it toggles
 profiles directly (problem 2). Its bar code showed the shell's building
 blocks (`Panel`, `BarIconButton`, `KeyboardPanel`, `PanelHero`,
-`ToggleSwitch`, `IpcHandler`), and `omarchy-plugin/` is built from those.
+`ToggleSwitch`, `IpcHandler`), and the widget (`manifest.json`, `Panel.qml`,
+`Fuzzy.js`, at the top level so `omarchy plugin add <repo url>` installs it)
+is built from those.
 Every action calls `pia-toggle`, so it cannot get out of step.
 
 Gotcha copied from Omawire: inside `PanelHero`'s `iconComponent` and
@@ -255,7 +257,7 @@ valid region ids only; refused for other units, other users, other actions,
 ## 12. Search and flags in the server list
 
 PIA has about 200 WireGuard regions, too many to scroll. The panel's search
-box uses fzf-style fuzzy matching (`omarchy-plugin/Fuzzy.js`): the typed
+box uses fzf-style fuzzy matching (`Fuzzy.js`): the typed
 characters must appear in order; word starts and runs score higher, gaps and
 long names lower; space-separated words must all match. Entries are
 lower-cased once, a linear subsequence scan rejects non-matches, and only

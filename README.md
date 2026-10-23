@@ -40,7 +40,7 @@ connect, so that never happens.
 | `pia-region@.service` | Saves a region and reconnects; the only root step behind switching server without a password |
 | `pia-watchdog.timer` | Every minute: reconnects with a new key if the tunnel is down, stale or passes no traffic |
 | `pia-toggle` | VPN + killswitch on/off together, no password (polkit rule `50-pia.rules`); `--status` prints JSON for a bar |
-| `omarchy-plugin/` | Omarchy bar widget `pia.vpn`: status, region and server, click to toggle |
+| `manifest.json`, `Panel.qml`, `Fuzzy.js` | Omarchy bar widget `pia.vpn`: status, server list with search and flags, click to toggle. At the top level so `omarchy plugin add` can install straight from this repo |
 
 [docs/HOW-IT-WAS-BUILT.md](docs/HOW-IT-WAS-BUILT.md) records every problem hit
 on the way (expiring keys, the killswitch design, a half-finished installer,
@@ -58,7 +58,8 @@ Do not enable `nftables.service`: its default config flushes ufw's and
 Docker's rules.
 
 ```sh
-git clone <this repo> && cd pia-vpn
+git clone https://github.com/JamesRBlack/pia-wireguard-omarchy.git
+cd pia-wireguard-omarchy
 ./install.sh                    # PIA login (once), region, detects your LAN
 ./install.sh --credentials      # change the saved login later
 ```
@@ -70,13 +71,14 @@ it at boot.
 
 ### Bar: Omarchy (Quattro and later)
 
+After `./install.sh` (the widget only displays and drives what it installs):
+
 ```sh
-mkdir -p ~/.config/omarchy/plugins
-cp -r omarchy-plugin ~/.config/omarchy/plugins/pia.vpn
-omarchy-plugin-validate ~/.config/omarchy/plugins/pia.vpn
-omarchy plugin enable pia.vpn right
+omarchy plugin add https://github.com/JamesRBlack/pia-wireguard-omarchy.git --enable
 omarchy-restart-shell
 ```
+
+Updates later: `omarchy plugin update pia.vpn`.
 
 If the icon ever disappears, for example after restoring or resetting the
 bar, the plugin is still installed but disabled. Turn it back on:
