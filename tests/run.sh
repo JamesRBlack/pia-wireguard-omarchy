@@ -12,7 +12,15 @@ cd "$(dirname "$0")/.."
 ROOT=$PWD
 FIX=$ROOT/tests/fixtures
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+# The namespace tests mount tmpfs on these, but the mount points themselves
+# are made on the real filesystem: remove the ones that were not there before.
+MOUNT_POINTS=()
+for d in /etc/pia /run/pia /run/netns; do [[ -e $d ]] || MOUNT_POINTS+=("$d"); done
+cleanup() {
+  rm -rf "$WORK"
+  if (( ${#MOUNT_POINTS[@]} )); then sudo -n rmdir "${MOUNT_POINTS[@]}" 2>/dev/null || true; fi
+}
+trap cleanup EXIT
 
 pass=0 fail=0 skip=0
 ok()   { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
@@ -202,8 +210,89 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+section "pia-nm connect: secrets stay off command lines (private mount namespace)"
+# Every local user can read any process's arguments (ps, /proc/*/cmdline), so
+# the password and the token must reach curl on stdin, never as arguments.
+if can_sudo && [[ -n $JQ ]]; then
+  C=$WORK/connect
+  stub "$C" curl 'case "$*" in
+  *serverlist*) cat '"$FIX"'/servers.json ;;
+  *addKey*) cat > '"$WORK"'/addkey.stdin
+    echo "{\"status\":\"OK\",\"peer_ip\":\"10.1.2.3\",\"server_key\":\"SK\",\"server_port\":1337,\"dns_servers\":[\"10.0.0.243\"]}" ;;
+  */token*) cat > '"$WORK"'/token.stdin; echo "{\"token\":\"TOKEN-s3cret\"}" ;;
+esac
+exit 0'
+  stub "$C" wg 'case "$1" in genkey) echo PRIVKEY;; pubkey) cat >/dev/null; echo PUBKEY;; esac'
+  stub "$C" nmcli 'exit 0'
+  stub "$C" nft 'exit 1'
+  printf '#!/bin/sh\nexec %q "$@"\n' "$JQ" > "$C/jq"; chmod +x "$C/jq"
+  : > "$WORK/calls"; : > "$WORK/token.stdin"; : > "$WORK/addkey.stdin"
+  out=$(sudo env PIA_USER='user-x9' PIA_PASS='pass-x9 "q\u<o@te' unshare -m bash -c "
+    mkdir -p /etc/pia /run/pia && mount -t tmpfs tmpfs /etc/pia && mount -t tmpfs tmpfs /run/pia
+    printf 'REGION=uk\nPIHOLE=0\n' > /etc/pia/pia.env; touch /etc/pia/ca.rsa.4096.crt
+    export PATH=$C:\$PATH
+    ./pia-nm connect </dev/null 2>&1; echo \"rc=\$? \$(grep ^SERVER= /run/pia/status)\"
+  " 2>&1)
+  check "connect succeeds against the stand-ins" "grep -q 'rc=0 SERVER=test-server' <<<\"\$out\"" "$out"
+  check "no curl argument holds the username, password or token" \
+    "! grep -qE 'user-x9|pass-x9|TOKEN-s3cret' $WORK/calls" "$(grep -E 'user-x9|pass-x9|TOKEN' "$WORK/calls")"
+  check "login reads username and password from stdin" \
+    "grep -q 'user-x9' $WORK/token.stdin && grep -q 'pass-x9' $WORK/token.stdin"
+  check "addKey reads the token from stdin" "grep -q 'TOKEN-s3cret' $WORK/addkey.stdin"
+else
+  skp "pia-nm connect" "needs passwordless sudo and jq"
+fi
+
+# ---------------------------------------------------------------------------
+# What pia-nm writes for curl must come back out exactly, whatever the password.
+section "curl config quoting (real curl, local HTTP server)"
+cat > "$WORK/echo-http.py" <<'PY'
+import http.server, json, sys, threading, urllib.parse, email.parser, email.policy
+seen = {}
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        seen.update(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)); self.reply()
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers["Content-Length"]))
+        msg = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(
+            b"Content-Type: " + self.headers["Content-Type"].encode() + b"\r\n\r\n" + body)
+        for part in msg.iter_parts():
+            seen.setdefault(part.get_param("name", header="content-disposition"), []).append(
+                part.get_payload(decode=True).decode())
+        self.reply()
+    def reply(self):
+        self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
+srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+print(srv.server_port, flush=True)
+sys.stdin.readline()          # the shell says when its requests are done
+print(json.dumps(seen), flush=True)
+PY
+eval "$(sed -n '/^curl_opt()/,/^}/p' pia-nm)"
+if declare -F curl_opt >/dev/null; then
+  coproc SRV { python3 -I "$WORK/echo-http.py"; }
+  read -r port <&"${SRV[0]}"
+  U='us"er\name' P=$'p\\a"s s\t\'<@;$(x)\nnext\r=%&+# '
+  { curl_opt form-string "username=$U"; curl_opt form-string "password=$P"; } |
+    curl -fsS -K - "http://127.0.0.1:$port/token" >/dev/null
+  curl_opt data-urlencode "pt=$P" | curl -fsS -G -K - --data-urlencode "pubkey=PUB" \
+    "http://127.0.0.1:$port/addKey" >/dev/null
+  echo >&"${SRV[1]}"; read -r seen <&"${SRV[0]}"; wait "$SRV_PID" 2>/dev/null
+  verdict=$(python3 -I -c '
+import json, sys; s = json.loads(sys.argv[1]); u, p = sys.argv[2], sys.argv[3]
+print("ok" if s.get("username") == [u] and s.get("password") == [p] else "FAIL")
+print("ok" if s.get("pt") == [p] and s.get("pubkey") == ["PUB"] else "FAIL")' "$seen" "$U" "$P")
+  check "form fields arrive byte for byte" "[[ \$(sed -n 1p <<<\"\$verdict\") == ok ]]" "$seen"
+  check "url-encoded query arrives byte for byte" "[[ \$(sed -n 2p <<<\"\$verdict\") == ok ]]" "$seen"
+else
+  bad "curl_opt is defined in pia-nm"
+fi
+
+# ---------------------------------------------------------------------------
 section "killswitch (private network namespace)"
-NFT=${NFT:-$(command -v nft || true)}
+# nft usually lives in /usr/sbin, which is not on every user's PATH.
+NFT=${NFT:-$(PATH=$PATH:/usr/sbin:/sbin command -v nft || true)}
 if can_sudo && [[ -n $NFT ]]; then
   out=$(sudo unshare -m -n bash -c "
     mkdir -p /etc/pia && mount -t tmpfs tmpfs /etc/pia
@@ -232,6 +321,71 @@ if can_sudo && [[ -n $NFT ]]; then
   check "traffic through the tunnel passes" "grep -q 'tunnel=allowed' <<<\"\$out\"" "$out"
 else
   skp "killswitch" "needs passwordless sudo and nft (set NFT=)"
+fi
+
+# ---------------------------------------------------------------------------
+section "killswitch: forwarded VM/container traffic (private network namespaces)"
+# A VM ("vm", behind podman9, an interface the killswitch does not list), an
+# internet host ("inet") behind the physical uplink u0, and later a tunnel
+# "pia" to the same host. conntrack is already running, as it is under ufw or
+# Docker, so a flow opened before the killswitch counts as established.
+cat > "$WORK/udp-echo.py" <<'PY'
+# One socket per address, so each reply leaves from the address it was sent to.
+import select, socket, sys
+socks = []
+for ip in sys.argv[1:]:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind((ip, 9999)); socks.append(s)
+while True:
+    for s in select.select(socks, [], [])[0]:
+        d, a = s.recvfrom(64); s.sendto(d, a)
+PY
+cat > "$WORK/udp-send.py" <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("0.0.0.0", int(sys.argv[2]))); s.settimeout(1)
+s.sendto(b"x", (sys.argv[1], 9999))
+try: s.recvfrom(64); print("reply")
+except OSError: print("none")
+PY
+if can_sudo && [[ -n $NFT ]]; then
+  out=$(sudo unshare -m -n bash -c "
+    mkdir -p /etc/pia /run/netns && mount -t tmpfs tmpfs /etc/pia && mount -t tmpfs tmpfs /run/netns
+    echo 'LAN=\"192.168.50.0/24\"' > /etc/pia/pia.env
+    ip link set lo up; ip netns add vm; ip netns add inet
+    ip link add podman9 type veth peer name eth0 netns vm
+    ip link add u0 type veth peer name eth0 netns inet
+    ip addr add 10.99.0.1/24 dev podman9; ip link set podman9 up
+    ip addr add 198.51.100.254/24 dev u0; ip link set u0 up
+    ip route add default via 198.51.100.1
+    for n in vm inet; do ip -n \$n link set lo up; ip -n \$n link set eth0 up; done
+    ip -n vm addr add 10.99.0.2/24 dev eth0; ip -n vm route add default via 10.99.0.1
+    ip -n inet addr add 198.51.100.1/24 dev eth0; ip -n inet route add 10.99.0.0/24 via 198.51.100.254
+    ip -n inet addr add 203.0.113.1/32 dev lo
+    sysctl -qw net.ipv4.ip_forward=1
+    $NFT -f - <<<'table inet other { chain other_forward { type filter hook forward priority 10; ct state established accept; }; }'
+    ip netns exec inet python3 -I $WORK/udp-echo.py 198.51.100.1 203.0.113.1 & echo_pid=\$!; sleep 0.5
+    send() { ip netns exec vm python3 -I $WORK/udp-send.py \$1 \$2; }
+    echo \"before=\$(send 198.51.100.1 40000)\"
+    $NFT -f <(./pia-killswitch print)
+    echo \"established=\$(send 198.51.100.1 40000) new=\$(send 198.51.100.1 40001)\"
+    ip link add pia type veth peer name eth1 netns inet
+    ip addr add 10.200.0.2/30 dev pia; ip link set pia up
+    # 203.0.113.1 is reachable only by the default route, so only through pia
+    ip -n inet addr add 10.200.0.1/30 dev eth1
+    ip -n inet link set eth1 up
+    ip route replace default via 10.200.0.1 dev pia
+    ip -n inet route replace 10.99.0.0/24 via 10.200.0.2
+    echo \"tunnel=\$(send 203.0.113.1 40002)\"
+    kill \$echo_pid
+  " 2>&1)
+  check "a VM reaches the internet without the killswitch (control)" "grep -q 'before=reply' <<<\"\$out\"" "$out"
+  check "an established VM flow over the uplink is cut when the killswitch comes on" \
+    "grep -q 'established=none' <<<\"\$out\"" "$out"
+  check "a new VM flow over the uplink is blocked" "grep -q 'new=none' <<<\"\$out\"" "$out"
+  check "a VM flow through the tunnel passes, replies included" "grep -q 'tunnel=reply' <<<\"\$out\"" "$out"
+else
+  skp "killswitch forwarding" "needs passwordless sudo and nft (set NFT=)"
 fi
 
 printf '\n%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"

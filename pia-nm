@@ -38,6 +38,14 @@ die() { printf 'pia-nm: %s\n' "$*" >&2; exit 1; }
 log() { printf 'pia-nm: %s\n' "$*"; }
 for c in curl jq wg nmcli; do command -v "$c" >/dev/null || die "$c not found"; done
 
+# Secrets reach curl as a config on stdin (curl -K -), never as arguments:
+# every local user can read any process's arguments (ps, /proc/*/cmdline).
+curl_opt() {  # curl_opt <option> <value>: one config line, value quoted
+  local v=${2//\\/\\\\}
+  v=${v//\"/\\\"}; v=${v//$'\n'/\\n}; v=${v//$'\r'/\\r}
+  printf '%s = "%s"\n' "$1" "$v"
+}
+
 ks_on() { [[ $EUID == 0 ]] && command -v nft >/dev/null && nft list table $KS_TABLE >/dev/null 2>&1; }
 
 # With the killswitch on, nothing leaves except through the tunnel, so PIA's own
@@ -92,8 +100,9 @@ connect() {
 
   allow_host www.privateinternetaccess.com
   local token
-  token=$(curl -fsS --connect-timeout 15 -X POST "$TOKEN_URL" \
-    --form "username=$PIA_USER" --form "password=$PIA_PASS" | jq -r '.token // empty')
+  # form-string, not form: a value starting with @ or < would name a file.
+  token=$({ curl_opt form-string "username=$PIA_USER"; curl_opt form-string "password=$PIA_PASS"; } |
+    curl -fsS --connect-timeout 15 -X POST -K - "$TOKEN_URL" | jq -r '.token // empty')
   [[ -n $token ]] || die "login failed (check username/password)"
 
   local wg_ip wg_cn region_name
@@ -111,10 +120,9 @@ connect() {
   pub=$(wg pubkey <<<"$priv")
 
   # The API's certificate is issued to the server's common name, not its IP.
-  resp=$(curl -fsS --connect-timeout 15 -G \
-    --connect-to "$wg_cn::$wg_ip:" --cacert "$CA" \
-    --data-urlencode "pt=$token" --data-urlencode "pubkey=$pub" \
-    "https://$wg_cn:1337/addKey")
+  resp=$(curl_opt data-urlencode "pt=$token" | curl -fsS --connect-timeout 15 -G \
+    --connect-to "$wg_cn::$wg_ip:" --cacert "$CA" -K - \
+    --data-urlencode "pubkey=$pub" "https://$wg_cn:1337/addKey")
   [[ $(jq -r '.status' <<<"$resp") == OK ]] || die "addKey refused: $resp"
 
   # nmcli names the imported connection after the file, so it must be pia.conf.

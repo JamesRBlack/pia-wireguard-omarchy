@@ -12,6 +12,13 @@ work.
 Unofficial: not affiliated with or endorsed by Private Internet Access. You
 need your own PIA subscription.
 
+<p align="center">
+  <img src="preview.png" width="360"
+       alt="The Omarchy bar panel: connected to AU Sydney with the killswitch on, the server, a search box and a server list with country flags, the current server in bold with a green cloud">
+</p>
+<p align="center"><sub>The Omarchy bar widget's panel: region, server, how long it has been up, the
+on/off switch, and a searchable server list. Click a server to switch.</sub></p>
+
 ## Is this your problem?
 
 - You imported a PIA WireGuard `.conf` into NetworkManager (`nmcli connection
@@ -63,7 +70,9 @@ a watchdog that missed a dead tunnel, a polkit rule that refused "off") and how
 each was found and fixed.
 
 Credentials are encrypted with `systemd-creds` (bound to this machine and its
-TPM when there is one) and decrypted only for `pia-vpn` and the watchdog.
+TPM when there is one) and decrypted only for `pia-vpn` and the watchdog. The
+password and PIA's login token reach `curl` on stdin, never as arguments,
+which every local user could read with `ps`.
 
 ## Install
 
@@ -197,11 +206,12 @@ curl -4 -s --max-time 5 https://ifconfig.me || echo BLOCKED   # watchdog reconne
 ## Development
 
 ```sh
-tests/run.sh        # 57 regression tests; nothing touches the real system
+tests/run.sh        # 67 regression tests; nothing touches the real system
 ```
 
 They run the scripts against stand-in commands, a fixture of PIA's region
-list, and private mount/network namespaces for `pia-nm` and the killswitch.
+list, and private mount/network namespaces for `pia-nm` and the killswitch
+(including a VM behind it, to check that forwarded traffic cannot leak).
 Python 3 is required; node, jq, nft and passwordless sudo enable the rest
 (missing ones are skipped and reported). `tools/check-qml.py Panel.qml`
 catches a QML property set twice, which makes the shell refuse the widget.

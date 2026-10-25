@@ -53,13 +53,16 @@ EOF
   # Traffic forwarded for VMs and containers follows the same rule.
   chain forward {
     type filter hook forward priority 0; policy drop;
-    ct state established,related accept
     oifname "pia" accept
     ip daddr { $LAN } accept
     oifname "virbr*" accept
     oifname "docker*" accept
     oifname "br-*" accept
     ip6 daddr { fe80::/10, ff00::/8 } accept
+    # Replies from the tunnel, also to container networks not named above. Not
+    # every established flow: one opened before the killswitch came on would
+    # keep leaving through the physical uplink.
+    iifname "pia" ct state established,related accept
     reject with icmpx type admin-prohibited
   }
 EOF

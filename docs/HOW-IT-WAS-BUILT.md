@@ -291,6 +291,37 @@ the quickest way to see why a widget does not appear:
 journalctl --user --since "10 min ago" | grep -iE 'pia|qml'
 ```
 
+## 14. Two leaks found in review
+
+The Omarchy plugin marketplace review found two:
+
+- **The password on the command line.** `pia-nm` passed the PIA username and
+  password to `curl` as `--form` arguments, and the login token as
+  `--data-urlencode`. Any local user can read another process's arguments
+  (`ps`, `/proc/*/cmdline`), so for the second or so each request took, they
+  were in plain view. A test that hangs a stand-in `curl` shows it:
+
+  ```
+  root  /bin/sh .../curl -fsS ... --form username=user-x9 --form password=pass-x9 ...
+  ```
+
+  Now they go to `curl` as a config on stdin (`curl -K -`), quoted by
+  `curl_opt`. `--form-string` replaces `--form` while at it: with `--form`, a
+  password starting with `@` or `<` named a file to send instead. A test
+  posts a password full of quotes, backslashes, tabs and newlines to a local
+  server through the real `curl` and checks it arrives byte for byte.
+
+- **Established flows skipped the forward killswitch.** The forward chain
+  began with `ct state established,related accept`, before any check of
+  where the packet was going. A VM or container connection opened before
+  the killswitch came on (or while the tunnel was being replaced) went on
+  leaving through the physical uplink. Now the outgoing interface is checked
+  first, and only replies coming back through the tunnel are accepted for
+  being established. The test builds a VM, an "internet" host and a tunnel
+  out of network namespaces, with conntrack already running as it is under
+  ufw or Docker: a UDP flow opened before the killswitch gets no further
+  reply after it, and a new one through `pia` gets its reply.
+
 ## Final checks (all passed)
 
 | Check | Result |
