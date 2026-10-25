@@ -38,9 +38,11 @@ table $TABLE {
     oifname "virbr*" accept
     oifname "docker*" accept
     oifname "br-*" accept
-    # the tunnel itself, and PIA's login and key API while connecting
+    # the tunnel itself, and PIA's login and key API while connecting. The API
+    # addresses come from the network's DNS, so they are open to root (pia-nm)
+    # only, not to every program.
     ip daddr @servers accept
-    ip daddr @api tcp dport 443 accept
+    ip daddr @api tcp dport 443 meta skuid 0 accept
     # IPv6: the tunnel is IPv4 only, so only link-local and multicast leave
     ip6 daddr { fe80::/10, ff00::/8 } accept
     # Fail fast instead of hanging until a timeout.

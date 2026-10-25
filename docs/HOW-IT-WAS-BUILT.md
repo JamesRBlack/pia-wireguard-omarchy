@@ -291,9 +291,10 @@ the quickest way to see why a widget does not appear:
 journalctl --user --since "10 min ago" | grep -iE 'pia|qml'
 ```
 
-## 14. Two leaks found in review
+## 14. Leaks found in review
 
-The Omarchy plugin marketplace review found two:
+The Omarchy plugin marketplace review found two, and checking the rest of
+the killswitch for the same kind of gap found a third:
 
 - **The password on the command line.** `pia-nm` passed the PIA username and
   password to `curl` as `--form` arguments, and the login token as
@@ -321,6 +322,18 @@ The Omarchy plugin marketplace review found two:
   out of network namespaces, with conntrack already running as it is under
   ufw or Docker: a UDP flow opened before the killswitch gets no further
   reply after it, and a new one through `pia` gets its reply.
+
+- **PIA's API hole was open to every program.** While connecting, the
+  killswitch let traffic to PIA's API addresses through on port 443 for ten
+  minutes (an nft set with a timeout), for any program. Those addresses are
+  shared Cloudflare ones (104.18.x, 104.19.x, 172.64.x on a live install), so
+  after every connect, reconnect or region switch any program could reach any
+  Cloudflare-hosted site outside the tunnel, from the real IP, with the
+  killswitch on. The rule now matches root only (`meta skuid 0`): `pia-nm`,
+  which runs as root, is the only program that needs it. The test opens
+  sockets through the killswitch in a network namespace as root and as
+  `nobody`: root reaches an address in the set on 443, `nobody` does not, and
+  other ports stay closed.
 
 ## Final checks (all passed)
 

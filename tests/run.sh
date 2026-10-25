@@ -324,6 +324,45 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+section "killswitch: PIA's API hole is root-only (private network namespace)"
+# sock-probe.py tcp|udp <ip> <port> <uid>: "allowed" if the packet left (a
+# dummy interface never answers), "blocked" if the killswitch refused it.
+cat > "$WORK/sock-probe.py" <<'PY'
+import os, socket, sys
+proto, ip, port, uid = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+os.setgid(uid); os.setuid(uid)
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM if proto == "tcp" else socket.SOCK_DGRAM)
+s.settimeout(1)
+try:
+    s.connect((ip, port))
+    if proto == "udp":
+        s.send(b"x"); s.recv(64)
+    print("allowed")
+except socket.timeout:
+    print("allowed")
+except OSError as e:
+    print("blocked" if e.errno in (1, 13, 111, 113) else "error-%d" % e.errno)
+PY
+if can_sudo && [[ -n $NFT ]]; then
+  out=$(sudo unshare -m -n bash -c "
+    export PATH=${NFT%/*}:\$PATH
+    mkdir -p /etc/pia && mount -t tmpfs tmpfs /etc/pia
+    ip link set lo up; ip link add d0 type dummy; ip addr add 10.20.0.5/16 dev d0; ip link set d0 up
+    ip route add default dev d0
+    p() { python3 -I $WORK/sock-probe.py \"\$@\"; }
+    echo 'LAN=\"192.168.50.0/24\"' > /etc/pia/pia.env; ./pia-killswitch on >/dev/null
+    nft add element inet pia_ks api '{ 198.51.100.7 }'
+    echo \"api_root=\$(p tcp 198.51.100.7 443 0) api_user=\$(p tcp 198.51.100.7 443 65534) api_port80=\$(p tcp 198.51.100.7 80 0) other_443=\$(p tcp 198.51.100.8 443 0)\"
+  " 2>&1)
+  check "PIA's API addresses are open to root on 443" "grep -q 'api_root=allowed' <<<\"\$out\"" "$out"
+  check "PIA's API addresses stay closed to other users" "grep -q 'api_user=blocked' <<<\"\$out\"" "$out"
+  check "PIA's API addresses are open on 443 only, and only they are" \
+    "grep -q 'api_port80=blocked other_443=blocked' <<<\"\$out\"" "$out"
+else
+  skp "killswitch API hole" "needs passwordless sudo and nft (set NFT=)"
+fi
+
+# ---------------------------------------------------------------------------
 section "killswitch: forwarded VM/container traffic (private network namespaces)"
 # A VM ("vm", behind podman9, an interface the killswitch does not list), an
 # internet host ("inet") behind the physical uplink u0, and later a tunnel

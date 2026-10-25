@@ -55,7 +55,7 @@ connect, so that never happens.
 | File | What it does |
 |---|---|
 | `pia-nm` | Logs in to PIA, registers a fresh key, rebuilds the NetworkManager profile `pia` and connects; `--check` reconnects a dead or stale tunnel |
-| `pia-killswitch` | An nftables table of its own: nothing leaves except through the tunnel, to the LAN, or to PIA's API while connecting. IPv6 is blocked (the tunnel is IPv4 only). ufw, Docker and libvirt rules are untouched |
+| `pia-killswitch` | An nftables table of its own: nothing leaves except through the tunnel, to the LAN, or to PIA's API while connecting (root only). IPv6 is blocked (the tunnel is IPv4 only). ufw, Docker and libvirt rules are untouched |
 | `pia-vpn.service` | Runs `pia-nm connect`; a failed connect leaves the killswitch on and retries |
 | `pia-killswitch.service` | Loads the killswitch before the network comes up |
 | `pia-region@.service` | Saves a region and reconnects; the only root step behind switching server without a password |
