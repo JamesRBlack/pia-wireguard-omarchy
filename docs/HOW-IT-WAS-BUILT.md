@@ -291,9 +291,10 @@ the quickest way to see why a widget does not appear:
 journalctl --user --since "10 min ago" | grep -iE 'pia|qml'
 ```
 
-## 14. Two leaks found in review
+## 14. Leaks found in review
 
-The Omarchy plugin marketplace review found two:
+The Omarchy plugin marketplace review found two, and checking the rest of
+the killswitch for the same kind of gap found a third:
 
 - **The password on the command line.** `pia-nm` passed the PIA username and
   password to `curl` as `--form` arguments, and the login token as
@@ -322,19 +323,26 @@ The Omarchy plugin marketplace review found two:
   ufw or Docker: a UDP flow opened before the killswitch gets no further
   reply after it, and a new one through `pia` gets its reply.
 
+- **PIA's API hole was open to every program.** While connecting, the
+  killswitch let traffic to PIA's API addresses through on port 443 for ten
+  minutes (an nft set with a timeout), for any program. Those addresses are
+  shared Cloudflare ones (104.18.x, 104.19.x, 172.64.x on a live install), so
+  after every connect, reconnect or region switch any program could reach any
+  Cloudflare-hosted site outside the tunnel, from the real IP, with the
+  killswitch on. The rule now matches root only (`meta skuid 0`): `pia-nm`,
+  which runs as root, is the only program that needs it. The test opens
+  sockets through the killswitch in a network namespace as root and as
+  `nobody`: root reaches an address in the set on 443, `nobody` does not, and
+  other ports stay closed.
+
 ## 15. A security audit, and everything it found
 
 A second, independent audit of the whole repository found nothing critical,
 four confirmed problems and five plausible ones. All are fixed, each with a
 test that fails on the code before the fix (35 checks fail on the previous
-version of the scripts):
+version of the scripts). The first, PIA's API hole open to every program, went
+out early with the review fixes (section 14); the rest:
 
-- **PIA's API hole was open to every program.** While connecting, the
-  killswitch let anything reach the API addresses on port 443 for ten
-  minutes, and those addresses come from the network's own DNS. A hostile
-  network could answer with addresses of its choice and have other programs'
-  traffic leave in the clear. The rule now matches root only (`meta skuid 0`):
-  `pia-nm` is the only program that needs it.
 - **No VPN on a network other than the one at install.** `LAN=` is recorded
   at install, so elsewhere the killswitch also blocked the network's DNS
   server and `pia-nm` could not resolve PIA's hosts: blocked for good. Now

@@ -515,7 +515,7 @@ if can_sudo && [[ -n $NFT ]]; then
     p() { python3 -I $WORK/sock-probe.py \"\$@\"; }
     echo 'LAN=\"192.168.50.0/24\"' > /etc/pia/pia.env; ./pia-killswitch on >/dev/null
     nft add element inet pia_ks api '{ 198.51.100.7 }'; nft add element inet pia_ks dns '{ 198.51.100.9 }'
-    echo \"api_root=\$(p tcp 198.51.100.7 443 0) api_user=\$(p tcp 198.51.100.7 443 65534) api_port80=\$(p tcp 198.51.100.7 80 0)\"
+    echo \"api_root=\$(p tcp 198.51.100.7 443 0) api_user=\$(p tcp 198.51.100.7 443 65534) api_port80=\$(p tcp 198.51.100.7 80 0) other_443=\$(p tcp 198.51.100.8 443 0)\"
     echo \"dns_udp=\$(p udp 198.51.100.9 53 65534) dns_tcp=\$(p tcp 198.51.100.9 53 1000) dns_other_port=\$(p udp 198.51.100.9 54 0) other_dns=\$(p udp 198.51.100.10 53 0)\"
     echo \"api_timeout=\$(nft list set inet pia_ks api | grep -o 'timeout [0-9a-z]*' | head -1) dns_timeout=\$(nft list set inet pia_ks dns | grep -o 'timeout [0-9a-z]*' | head -1)\"
     # A typo in LAN= and an unquoted list: the killswitch still loads.
@@ -529,7 +529,8 @@ if can_sudo && [[ -n $NFT ]]; then
   " 2>&1)
   check "PIA's API addresses are open to root on 443" "grep -q 'api_root=allowed' <<<\"\$out\"" "$out"
   check "PIA's API addresses stay closed to other users" "grep -q 'api_user=blocked' <<<\"\$out\"" "$out"
-  check "PIA's API addresses are open on 443 only" "grep -q 'api_port80=blocked' <<<\"\$out\"" "$out"
+  check "PIA's API addresses are open on 443 only, and only they are" \
+    "grep -q 'api_port80=blocked other_443=blocked' <<<\"\$out\"" "$out"
   check "the network's DNS servers are reachable on port 53 (udp and tcp) while connecting" \
     "grep -q 'dns_udp=allowed dns_tcp=allowed' <<<\"\$out\"" "$out"
   check "only on port 53, and only the servers in the set" \
