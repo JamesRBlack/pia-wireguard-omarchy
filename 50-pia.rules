@@ -5,8 +5,10 @@ polkit.addRule(function(action, subject) {
     var verb = action.lookup("verb");
     if (action.id != "org.freedesktop.systemd1.manage-units" || subject.user != "@USER@")
         return polkit.Result.NOT_HANDLED;
+    // Start and stop only: restarting the killswitch would drop it, and the
+    // tunnel with it, for a moment.
     if ((unit == "pia-vpn.service" || unit == "pia-killswitch.service") &&
-        (verb == "start" || verb == "stop" || verb == "restart"))
+        (verb == "start" || verb == "stop"))
         return polkit.Result.YES;
     // pia-nm validates the id again before using it.
     if (/^pia-region@[a-z0-9_-]+\.service$/.test(unit) && verb == "start")

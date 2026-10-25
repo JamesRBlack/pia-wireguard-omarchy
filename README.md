@@ -55,7 +55,8 @@ connect, so that never happens.
 | File | What it does |
 |---|---|
 | `pia-nm` | Logs in to PIA, registers a fresh key, rebuilds the NetworkManager profile `pia` and connects; `--check` reconnects a dead or stale tunnel |
-| `pia-killswitch` | An nftables table of its own: nothing leaves except through the tunnel, to the LAN, or to PIA's API while connecting. IPv6 is blocked (the tunnel is IPv4 only). ufw, Docker and libvirt rules are untouched |
+| `pia-killswitch` | An nftables table of its own: nothing leaves except through the tunnel, to the LAN, or, while connecting, to PIA's API (root only) and the network's DNS servers (two minutes). IPv6 is blocked (the tunnel is IPv4 only). ufw, Docker and libvirt rules are untouched |
+| `ca.rsa.4096.crt` | PIA's CA certificate (the same file as in PIA's own OpenVPN bundle), which signs the key API. Installed to `/etc/pia`, checked by hash on every connect, never downloaded |
 | `pia-vpn.service` | Runs `pia-nm connect`; a failed connect leaves the killswitch on and retries |
 | `pia-killswitch.service` | Loads the killswitch before the network comes up |
 | `pia-region@.service` | Saves a region and reconnects; the only root step behind switching server without a password |
@@ -107,7 +108,8 @@ it at boot.
 
 After `./install.sh`. The widget only displays and drives what the installer
 sets up, so installing the widget alone (for example from the Omarchy plugin
-marketplace) shows a "not installed" message until `./install.sh` has run.
+marketplace) shows a "not installed" message until `./install.sh` has run,
+and picks the system part up by itself once it has.
 
 ```sh
 omarchy plugin add https://github.com/JamesRBlack/pia-wireguard-omarchy.git --enable
@@ -131,8 +133,13 @@ Left click opens the panel: region, server, the on/off switch and a server
 list with country flags and fuzzy search: type `lon`, `uk lon` or `uklon`,
 then Enter (or click). The current server is in bold white, the rest grey. Flags
 need a colour-emoji font (`noto-fonts-emoji` on Arch). Right click toggles,
-middle click refreshes. The icon is red while traffic is blocked. It toggles
-quietly; failures still notify.
+middle click refreshes. The icon is red while traffic is blocked, and also
+when something is wrong (a killswitch that failed to load, or a tunnel left up
+without the service). It toggles quietly; failures still notify.
+
+The server list comes from PIA's live server list: it is refreshed on every
+connect and region switch, and by the watchdog when it is more than 6 hours old,
+so regions PIA adds or retires show up without reinstalling anything.
 
 ### Bar: waybar
 
@@ -150,8 +157,8 @@ add `"custom/pia"` to a modules list and:
 }
 ```
 
-Classes `on`, `blocked` and `off` are there for `style.css`, e.g.
-`#custom-pia.blocked { color: #e06c75; }`.
+Classes `on`, `blocked`, `error` and `off` are there for `style.css`, e.g.
+`#custom-pia.blocked, #custom-pia.error { color: #e06c75; }`.
 
 ### Keybinding (Hyprland)
 
@@ -191,7 +198,14 @@ the id against PIA's server list, saves it as `REGION=` in
 `PIHOLE=1` keeps your LAN DNS (e.g. a Pi-hole) instead of PIA's while
 connected; queries then leave through your normal connection unless that DNS
 server encrypts its upstream.
-`KS_FORWARD=0` leaves VMs and containers out of the killswitch.
+`KS_FORWARD=0` leaves VMs and containers out of the killswitch. It covers
+NAT'd VM and container networks (libvirt's default, Docker, Podman); a VM
+bridged straight onto your LAN never passes through this machine's firewall,
+so set its own network up separately.
+
+A mistake in `pia.env` (a typo in `LAN=`, an unquoted list) does not leave you
+without a killswitch: it falls back to all private ranges and says so in
+`journalctl -u pia-killswitch`.
 
 ## Check it
 
@@ -206,7 +220,7 @@ curl -4 -s --max-time 5 https://ifconfig.me || echo BLOCKED   # watchdog reconne
 ## Development
 
 ```sh
-tests/run.sh        # 67 regression tests; nothing touches the real system
+tests/run.sh        # 113 regression tests; nothing touches the real system
 ```
 
 They run the scripts against stand-in commands, a fixture of PIA's region
@@ -215,6 +229,13 @@ list, and private mount/network namespaces for `pia-nm` and the killswitch
 Python 3 is required; node, jq, nft and passwordless sudo enable the rest
 (missing ones are skipped and reported). `tools/check-qml.py Panel.qml`
 catches a QML property set twice, which makes the shell refuse the widget.
+
+To see the widget in a real Omarchy shell without touching your own machine,
+Omarchy publishes a ready-installed VM image for testing (see
+[omarchy-iso](https://github.com/omacom-io/omarchy-iso), "VM images"): its
+`vm-boot` script boots it on a throwaway overlay with SSH, and
+`omarchy plugin validate` and `omarchy plugin add file:///path/to/a/git/repo`
+work inside it as they do on a real install.
 
 ## Credits
 

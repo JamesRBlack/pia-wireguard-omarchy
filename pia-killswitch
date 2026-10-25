@@ -2,6 +2,8 @@
 # VPN killswitch: while on, nothing leaves this machine except through the "pia"
 # tunnel, to the local network, or to PIA's own servers (which pia-nm adds while
 # it fetches a key). Like Android's "Block connections without VPN".
+# VMs on a bridged (not NAT'd) network never pass through this machine's
+# forward hook, so only NAT'd VM and container networks are covered.
 #
 # It is its own nftables table, so ufw, Docker and libvirt rules are untouched;
 # a packet has to pass every table, so this can only block, never open.
@@ -13,10 +15,15 @@
 set -euo pipefail
 
 TABLE="inet pia_ks"
+PRIVATE="10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16"
 LAN=""
 KS_FORWARD=1
-[[ -f /etc/pia/pia.env ]] && source /etc/pia/pia.env
-[[ -n $LAN ]] || LAN="10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16"
+# A mistake in pia.env must not leave the machine without a killswitch: the
+# unit failing would mean no VPN and plain internet.
+if [[ -f /etc/pia/pia.env ]]; then
+  source /etc/pia/pia.env || echo "pia-killswitch: error in /etc/pia/pia.env, using what could be read" >&2
+fi
+[[ -n $LAN ]] || LAN=$PRIVATE
 
 ruleset() {
   cat <<EOF
@@ -25,6 +32,7 @@ delete table $TABLE
 table $TABLE {
   set servers { type ipv4_addr; }
   set api { type ipv4_addr; flags timeout; timeout 10m; }
+  set dns { type ipv4_addr; flags timeout; timeout 2m; }
 
   chain output {
     type filter hook output priority 0; policy drop;
@@ -38,9 +46,14 @@ table $TABLE {
     oifname "virbr*" accept
     oifname "docker*" accept
     oifname "br-*" accept
-    # the tunnel itself, and PIA's login and key API while connecting
+    # the tunnel itself, and PIA's login and key API while connecting. The API
+    # addresses come from the network's DNS, so they are open to root (pia-nm)
+    # only, not to every program.
     ip daddr @servers accept
-    ip daddr @api tcp dport 443 accept
+    ip daddr @api tcp dport 443 meta skuid 0 accept
+    # the network's DNS servers for two minutes while connecting, so PIA's
+    # names resolve on networks other than the LAN
+    ip daddr @dns meta l4proto { tcp, udp } th dport 53 accept
     # IPv6: the tunnel is IPv4 only, so only link-local and multicast leave
     ip6 daddr { fe80::/10, ff00::/8 } accept
     # Fail fast instead of hanging until a timeout.
@@ -71,7 +84,13 @@ EOF
 }
 
 case ${1:-} in
-  on)     ruleset | nft -f - && echo "killswitch on" ;;
+  on)     if ! ruleset | nft -f -; then
+            # Most likely a typo in LAN=: block with the default LAN rather than not at all.
+            echo "pia-killswitch: LAN=\"$LAN\" was refused, using all private ranges" >&2
+            LAN=$PRIVATE
+            ruleset | nft -f -
+          fi
+          echo "killswitch on" ;;
   off)    nft delete table $TABLE 2>/dev/null || true; echo "killswitch off" ;;
   status) if nft list table $TABLE >/dev/null 2>&1; then echo on; else echo off; fi ;;
   print)  ruleset ;;

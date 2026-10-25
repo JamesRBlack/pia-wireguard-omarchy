@@ -20,11 +20,15 @@ Panel {
   manageIpc: false
 
   readonly property string toggleCmd: "/usr/local/bin/pia-toggle"
+  // Run through env: a missing pia-toggle then exits 127 like any failed
+  // command, where started directly it would never start, never exit, and
+  // leave the panel "loading…" with no hint.
+  function piaToggle(args) { return ["/usr/bin/env", toggleCmd].concat(args) }
   // The widget only displays and drives the system part (services, killswitch,
   // pia-toggle), which a marketplace install does not include.
-  readonly property string setupHint: "The VPN itself is not installed. Run ./install.sh from github.com/JamesRBlack/pia-wireguard-omarchy, then restart the shell."
+  readonly property string setupHint: "The VPN itself is not installed. Run ./install.sh from github.com/JamesRBlack/pia-wireguard-omarchy; this panel picks it up by itself."
 
-  // "on" | "blocked" | "off" | "" (not read yet)
+  // "on" | "blocked" | "error" | "off" | "" (not read yet)
   property string vpnState: ""
   property string vpnText: ""
   property var detailLines: []
@@ -57,7 +61,7 @@ Panel {
   readonly property int serverFontSize: Math.round(Style.font.bodySmall * 1.12)
   // Red while traffic is blocked (connecting, or the tunnel dropped), full
   // brightness while connected, dimmed while off.
-  readonly property color barIconColor: vpnState === "blocked" || lastError !== ""
+  readonly property color barIconColor: vpnState === "blocked" || vpnState === "error" || lastError !== ""
     ? urgent
     : (vpnState === "on" ? barForeground : Qt.darker(barForeground, 1.55))
 
@@ -70,7 +74,7 @@ Panel {
     if (busy) return false
     // --quiet: the icon is the feedback; a toast would cover it. Failures
     // still notify.
-    toggleProcess.command = mode ? [toggleCmd, mode, "--quiet"] : [toggleCmd, "--quiet"]
+    toggleProcess.command = mode ? piaToggle([mode, "--quiet"]) : piaToggle(["--quiet"])
     toggleProcess.running = true
     return true
   }
@@ -92,7 +96,7 @@ Panel {
   // if the VPN was off. The killswitch stays up across the switch.
   function runRegion(id) {
     if (busy || id === currentRegion && vpnState === "on") return false
-    toggleProcess.command = [toggleCmd, "region", id, "--quiet"]
+    toggleProcess.command = piaToggle(["region", id, "--quiet"])
     toggleProcess.running = true
     currentRegion = id
     return true
@@ -166,7 +170,7 @@ Panel {
   Process {
     id: statusProcess
     running: false
-    command: [root.toggleCmd, "--status"]
+    command: root.piaToggle(["--status"])
     stdout: StdioCollector {
       id: statusStdout
       waitForEnd: true
@@ -181,7 +185,7 @@ Panel {
   Process {
     id: regionsProcess
     running: false
-    command: [root.toggleCmd, "--regions"]
+    command: root.piaToggle(["--regions"])
     stdout: StdioCollector {
       id: regionsStdout
       waitForEnd: true
@@ -198,7 +202,8 @@ Panel {
     id: toggleProcess
     running: false
     onExited: function(exitCode) {
-      if (exitCode !== 0) root.lastError = "pia-toggle failed (exit " + exitCode + ")"
+      if (exitCode === 127) root.lastError = root.setupHint
+      else if (exitCode !== 0) root.lastError = "pia-toggle failed (exit " + exitCode + ")"
       root.refresh()
       fastPoll.restart()
     }
@@ -281,7 +286,7 @@ Panel {
           implicitHeight: hero.implicitHeight
           readonly property string vpnState: root.vpnState
           readonly property bool busy: root.busy
-          readonly property color iconColor: root.vpnState === "blocked" ? root.urgent : root.foreground
+          readonly property color iconColor: root.vpnState === "blocked" || root.vpnState === "error" ? root.urgent : root.foreground
           readonly property string fontFamily: root.fontFamily
           function flip() { root.runToggle(root.vpnState === "off" ? "on" : "off") }
 
@@ -290,12 +295,14 @@ Panel {
             width: parent.width
             title: "PIA WireGuard"
             meta: root.vpnState === "on" ? (root.detailLines[0] || "Connected").replace(/^PIA /, "")
-              : (root.vpnState === "blocked" ? "Connecting: traffic blocked" : "Off")
+              : (root.vpnState === "blocked" ? "Connecting: traffic blocked"
+                : (root.vpnState === "error" ? "Error" : "Off"))
             foreground: root.foreground
             fontFamily: root.fontFamily
             iconOpacity: root.vpnState === "on" ? 1.0 : 0.5
             iconComponent: Component {
               Text {
+                textFormat: Text.PlainText
                 text: "󰖂"
                 color: header.iconColor
                 font.family: header.fontFamily
@@ -307,7 +314,8 @@ Panel {
                 id: powerSwitch
                 // On while the killswitch is: "blocked" still means the VPN is
                 // wanted, and switching it off is how to get normal internet.
-                checked: header.vpnState === "on" || header.vpnState === "blocked"
+                // "error" too: switching off is the way out of it.
+                checked: header.vpnState === "on" || header.vpnState === "blocked" || header.vpnState === "error"
                 busy: header.busy
                 foreground: hero.foreground
                 onToggled: header.flip()
@@ -323,6 +331,7 @@ Panel {
         }
 
         Text {
+          textFormat: Text.PlainText
           visible: root.lastError !== ""
           width: parent.width
           text: root.lastError
@@ -332,21 +341,26 @@ Panel {
           wrapMode: Text.WordWrap
         }
 
-        // Server, endpoint and since-when, from the status tooltip.
+        // Server, endpoint and since-when, from the status tooltip; for an
+        // error, the whole message (too long for the header) and what to do.
         Repeater {
-          model: root.vpnState === "on" ? root.detailLines.slice(1) : []
+          model: root.vpnState === "on" ? root.detailLines.slice(1)
+            : (root.vpnState === "error" ? root.detailLines : [])
           Text {
+            textFormat: Text.PlainText
             required property string modelData
             width: column.width
             text: modelData
-            color: root.dim
+            color: root.vpnState === "error" ? root.urgent : root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
+            wrapMode: root.vpnState === "error" ? Text.WordWrap : Text.NoWrap
             elide: Text.ElideRight
           }
         }
 
         Text {
+          textFormat: Text.PlainText
           visible: root.vpnState === "blocked"
           width: parent.width
           text: "Nothing leaves this machine until the tunnel is up. The watchdog keeps retrying; switch off for normal internet."
@@ -357,8 +371,9 @@ Panel {
         }
 
         Text {
+          textFormat: Text.PlainText
           width: parent.width
-          text: root.regions.length === 0 ? "SERVERS (loading…)"
+          text: root.regions.length === 0 ? (root.lastError === root.setupHint ? "SERVERS" : "SERVERS (loading…)")
             : (root.query.trim() === "" ? "SERVERS" : "SERVERS · " + root.filtered.length + " of " + root.regions.length)
           color: root.dim
           font.family: root.fontFamily
@@ -407,6 +422,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               anchors.fill: parent
               verticalAlignment: Text.AlignVCenter
               visible: searchInput.text === ""
@@ -451,6 +467,7 @@ Panel {
               spacing: Style.space(6)
 
               Text {
+                textFormat: Text.PlainText
                 width: Style.space(24)
                 horizontalAlignment: Text.AlignHCenter
                 text: root.flag(row.modelData.country)
@@ -458,6 +475,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width - Style.space(24) - Style.space(20) - 2 * parent.spacing
                 text: root.shortName(row.modelData)
                 color: row.current ? "white" : root.dim
@@ -473,6 +491,7 @@ Panel {
               // connected, a red crossed-out cloud otherwise (off, connecting
               // or dropped). Its own fixed-width column, so names never move.
               Text {
+                textFormat: Text.PlainText
                 width: Style.space(20)
                 horizontalAlignment: Text.AlignRight
                 visible: row.current
@@ -495,6 +514,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             anchors.centerIn: parent
             visible: root.regions.length > 0 && root.filtered.length === 0
             text: "No server matches “" + root.query.trim() + "”"

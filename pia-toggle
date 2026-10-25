@@ -23,6 +23,7 @@ notify() {
   command -v notify-send >/dev/null && notify-send -a "PIA VPN" "$@"
 }
 refresh_bar() { pkill -RTMIN+9 waybar 2>/dev/null || true; }
+tunnel_up() { ip -o link show pia 2>/dev/null | grep -q '[<,]UP[,>]'; }
 
 # systemctl errors (a refused polkit check, say) go to the notification and to
 # stderr, never swallowed: a "VPN off" toast must mean the VPN is off.
@@ -48,6 +49,14 @@ off() {
   # goes first, so the killswitch still holds while the tunnel closes.
   err=$(systemctl stop pia-vpn.service 2>&1) || fail "Could not turn the VPN off" "$err"
   err=$(systemctl stop pia-killswitch.service 2>&1) || fail "Could not turn the killswitch off" "$err"
+  # A tunnel that outlived pia-vpn (stopping an inactive unit runs nothing).
+  # nmcli exits 0 even when NetworkManager refuses ("Not authorized"), so the
+  # interface is checked again rather than trusting it.
+  if tunnel_up; then
+    err=$(nmcli connection down pia 2>&1)
+    for _ in 1 2 3 4 5; do tunnel_up || break; sleep 0.2; done
+    ! tunnel_up || fail "Could not close the tunnel" "${err:-the pia interface is still up}"
+  fi
   [[ $(systemctl is-active pia-killswitch.service) != active ]] ||
     fail "VPN still on" "The killswitch is still active after stopping it"
   notify "VPN off" "Normal connection, no killswitch"
@@ -64,7 +73,10 @@ await_up() {
       if [[ $(state) == active ]] && { [[ -z ${1:-} ]] || grep -qx "REGION=$1" /run/pia/status 2>/dev/null; }; then
         notify "VPN on" "$(where), killswitch on"; refresh_bar; exit
       fi
-      [[ $(state) == failed ]] && break
+      if [[ $(state) == failed ]]; then
+        notify -u critical "VPN not connected" "Traffic stays blocked; journalctl -u pia-vpn says why (a refused login: ./install.sh --credentials). Switching off restores normal internet."
+        refresh_bar; exit
+      fi
       sleep 2
     done
     notify -u critical "VPN not connected" "Still retrying; traffic stays blocked. pia-toggle off restores normal internet."
@@ -112,9 +124,23 @@ status() {
   ks=$(systemctl is-active pia-killswitch.service 2>/dev/null)
   # "on" needs the tunnel itself to be up, not just the service.
   local up=0
-  ip -o link show pia 2>/dev/null | grep -q '[<,]UP[,>]' && up=1
-  case $(state)/$up in
-    active/1)
+  tunnel_up && up=1
+  case $ks/$(state)/$up in
+    # Without its killswitch the VPN cannot start: most likely a mistake in
+    # /etc/pia/pia.env. Shown as an error, never as a plain "off".
+    failed/*)
+      text="VPN error"; class=error
+      tip="The killswitch failed to start: journalctl -u pia-killswitch" ;;
+    # pia-vpn gave up (a refused login is not retried): the killswitch still
+    # blocks everything, so this must not read as "connecting".
+    active/failed/0)
+      text="VPN error"; class=error
+      tip="Not connected, traffic blocked: journalctl -u pia-vpn says why (a refused login: ./install.sh --credentials)" ;;
+    # A tunnel that outlived pia-vpn: no killswitch and no watchdog behind it.
+    */inactive/1|*/failed/1)
+      text="VPN error"; class=error
+      tip="The tunnel is up without pia-vpn: switch off (pia-toggle off) to close it" ;;
+    */active/1)
       local NAME="" SERVER="" ENDPOINT="" SINCE=""
       . /run/pia/status 2>/dev/null || true
       text="VPN ${NAME:-on}"; class=on

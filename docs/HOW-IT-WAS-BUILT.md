@@ -322,6 +322,94 @@ The Omarchy plugin marketplace review found two:
   ufw or Docker: a UDP flow opened before the killswitch gets no further
   reply after it, and a new one through `pia` gets its reply.
 
+## 15. A security audit, and everything it found
+
+A second, independent audit of the whole repository found nothing critical,
+four confirmed problems and five plausible ones. All are fixed, each with a
+test that fails on the code before the fix (35 checks fail on the previous
+version of the scripts):
+
+- **PIA's API hole was open to every program.** While connecting, the
+  killswitch let anything reach the API addresses on port 443 for ten
+  minutes, and those addresses come from the network's own DNS. A hostile
+  network could answer with addresses of its choice and have other programs'
+  traffic leave in the clear. The rule now matches root only (`meta skuid 0`):
+  `pia-nm` is the only program that needs it.
+- **No VPN on a network other than the one at install.** `LAN=` is recorded
+  at install, so elsewhere the killswitch also blocked the network's DNS
+  server and `pia-nm` could not resolve PIA's hosts: blocked for good. Now
+  `pia-nm` lets the network's DNS servers (from NetworkManager and
+  resolv.conf) through on port 53 for two minutes before it resolves.
+- **nft injection through the server list.** The server address went into
+  `nft add element ... "{ $wg_ip }"`, where `}; add chain ...` runs as a
+  second command. Every field from PIA (server address and name, the key
+  API's address, key, port and DNS) is now checked against its exact format
+  before use: a newline in the server key would otherwise have added lines of
+  its own to the WireGuard config.
+- **PIA's CA certificate was downloaded on first connect** and trusted from
+  then on, including a half-downloaded copy. It is now in the repository
+  (identical to the copy in PIA's OpenVPN bundle), installed by `install.sh`
+  and checked against its SHA-256 before every connect.
+- **polkit allowed restarting the killswitch**, which nothing uses and which
+  drops it for a moment. Only start and stop now.
+- **Stopping a connect half-way left the tunnel up.** systemd skips
+  `ExecStop=` when a start is stopped before it finished; `ExecStopPost=`
+  always runs. The bar also shows an error, and `pia-toggle off` closes the
+  tunnel, if one is ever up without the service.
+- **DNS could fall back to the LAN.** Without systemd-resolved, glibc tries
+  every connection's DNS server in turn. The profile now has
+  `ipv4.dns-priority -1`, which drops the others, and `ipv4.dns-search ~.`.
+- **Region names were shown as rich text.** QML's `Text` renders anything
+  that looks like markup, and rich text can load images from URLs. Names are
+  stripped of markup, quotes and control characters where `pia-nm` writes
+  them, and every `Text` in the panel is plain text.
+- **A typo in `pia.env` turned the killswitch off.** `nft` refused the rules,
+  the unit failed, and the VPN with it: plain internet, shown as "off". A
+  refused `LAN=` now falls back to all private ranges, a line that does not
+  parse is skipped, and a failed killswitch shows as an error.
+- **The installer took any region id**, which then sat in a file root
+  sources. It now asks until the id is one from PIA's list.
+
+The bar's server list also could go stale: it was refreshed only on connect.
+The watchdog now refreshes it when it is more than six hours old.
+
+## 16. Testing in a real Omarchy
+
+Unit tests and namespaces cannot show the widget in the shell, nor how
+systemd, polkit and NetworkManager really behave. Omarchy publishes a
+ready-installed VM image (4.0.6, stable) that boots under QEMU in seconds;
+screenshots and clicks went through QEMU's QMP socket. It found five problems
+the tests had not:
+
+- **The "not installed" hint never showed.** The marketplace widget runs
+  `/usr/local/bin/pia-toggle`, which does not exist before `install.sh`.
+  Quickshell then logs "Process failed to start" every 5 seconds and never
+  reports an exit, so the panel sat at "SERVERS (loading…)" forever. It now
+  runs `pia-toggle` through `/usr/bin/env`, which exits 127 when it is
+  missing; the hint shows, and goes away by itself after `install.sh`.
+- **A stopped half-finished connect really did leave the tunnel up** (P1 of
+  the audit): with `ExecStop=`, a `pia` tunnel brought up while `pia-vpn` was
+  still starting survived `systemctl stop`; with `ExecStopPost=` it is gone.
+- **`nmcli` exits 0 when NetworkManager refuses.** Closing a stray tunnel
+  from an SSH session printed "Not authorized to deactivate connections" and
+  `pia-toggle off` reported success. It now checks the interface afterwards
+  and fails loudly. From the desktop session, the widget's switch closes it.
+- **A wrong password was retried every 20 seconds, forever.** Within minutes
+  PIA answered 429 (too many requests) to every login from that address. A
+  refused login now exits 3, which `pia-vpn` does not retry; the killswitch
+  stays up and the widget shows an error saying to fix the credentials. The
+  log says "login refused" instead of `curl: (22) ... 401`.
+- **The test suite left empty `/etc/pia`, `/run/pia` and `/run/netns`
+  behind**: the mount points for its namespaces were made on the real
+  filesystem. It now removes the ones it created.
+
+Also confirmed there: Omarchy 4 uses NetworkManager (so the requirement
+holds), `install.sh` stops on a missing `wireguard-tools` with the right
+`pacman` command, `omarchy plugin validate` accepts the plugin, all tests pass
+on Arch, the killswitch blocks with ufw active, the login request reaches PIA
+through the killswitch's DNS and API holes, and polkit allows start and stop
+without a password but refuses restart.
+
 ## Final checks (all passed)
 
 | Check | Result |

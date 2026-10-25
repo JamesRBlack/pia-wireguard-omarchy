@@ -54,6 +54,19 @@ fi
 
 if (( problems )); then echo "nothing installed"; exit 1; fi
 
+# Asks until the answer is a region id from the list on stdin (as printed by
+# pia-nm --list), or just well formed when the list could not be fetched. The
+# id is written into pia.env, which root sources.
+ask_region() {  # ask_region <list>: prompts on stderr, prints the id
+  local list=$1 r
+  while read -rp "Region id from the list above: " r; do
+    if [[ ! $r =~ ^[a-z0-9_-]{1,40}$ ]]; then echo "  not a region id: '$r'" >&2
+    elif [[ -n $list ]] && ! cut -f1 <<<"$list" | grep -qx -- "$r"; then echo "  not in the list: '$r'" >&2
+    else printf '%s\n' "$r"; return 0; fi
+  done
+  return 1
+}
+
 # pia-nm owns the NetworkManager profile "pia" and recreates it on every
 # connect. On a first install, a profile of that name belongs to someone else:
 # ask before it gets replaced.
@@ -74,6 +87,8 @@ chmod 644 /etc/polkit-1/rules.d/50-pia.rules
 # pia.env holds no secrets and the bar reads REGION from it; the credentials
 # file is 0600 on its own.
 install -d -m 755 /etc/pia
+# PIA's CA certificate, never downloaded at connect time; pia-nm checks its hash.
+install -m 644 ca.rsa.4096.crt /etc/pia/ca.rsa.4096.crt
 if [[ ! -f /etc/pia/pia.env ]]; then
   install -m 644 pia.env /etc/pia/pia.env
   # The killswitch loads before the network is up, so the LAN it must keep
@@ -87,9 +102,9 @@ if [[ ! -f /etc/pia/pia.env ]]; then
     echo "could not detect your local network: all private ranges stay reachable (LAN= in /etc/pia/pia.env)"
   fi
   echo "PIA regions:"
-  /usr/local/bin/pia-nm --list | column -t -s $'\t' | sed 's/^/  /' || true
-  region=""
-  until [[ -n $region ]]; do read -rp "Region id from the list above: " region; done
+  regions=$(/usr/local/bin/pia-nm --list) || regions=""
+  column -t -s $'\t' <<<"$regions" | sed 's/^/  /'
+  region=$(ask_region "$regions") || { echo "no region chosen; set REGION= in /etc/pia/pia.env"; region=""; }
   sed -i "s|^REGION=.*|REGION=$region|" /etc/pia/pia.env
 fi
 chmod 644 /etc/pia/pia.env

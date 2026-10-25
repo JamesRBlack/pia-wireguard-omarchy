@@ -21,8 +21,11 @@ set -euo pipefail
 CONN=pia
 KS_TABLE="inet pia_ks"
 CONF_DIR=/etc/pia
+# PIA's CA, which signs the WireGuard servers' key API. install.sh copies it
+# from this repository, where it matches the copy in PIA's own OpenVPN bundle;
+# it is checked against this hash before every use.
 CA=$CONF_DIR/ca.rsa.4096.crt
-CA_URL=https://raw.githubusercontent.com/pia-foss/manual-connections/master/ca.rsa.4096.crt
+CA_SHA256=32e9b1d1433ea97614f2a14c6e358e3f57c0570cc9f6b2ee812699ba696c66ab
 SERVERS_URL=https://serverlist.piaservers.net/vpninfo/servers/v6
 TOKEN_URL=https://www.privateinternetaccess.com/api/client/v2/token
 # A handshake older than this means the server stopped answering. WireGuard
@@ -33,8 +36,21 @@ STATUS=/run/pia/status
 # Region list for the bar's server picker, refreshed whenever pia-nm reads the
 # server list. It is there even while the killswitch blocks a live fetch.
 REGIONS=/run/pia/regions
+# The watchdog refreshes that list when it is older than this, so regions PIA
+# adds or retires show up even while one connection lasts for days.
+REGIONS_MAX_AGE_MIN=360
+# id, name and country code per region. Names are shown by the bar, which
+# treats text with markup as rich text, and go into JSON and tab-separated
+# lines: markup, quotes, backslashes and control characters are dropped.
+ROWS='.regions[] | select(.servers.wg and (.id | test("^[a-z0-9_-]{1,40}$")))
+  | [.id, .name, (.country // "")] | map(gsub("[<>&\"\\\\[:cntrl:]]"; "")) | @tsv'
+IPV4='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
 
 die() { printf 'pia-nm: %s\n' "$*" >&2; exit 1; }
+# Exit status 3: PIA refused the login. pia-vpn.service does not retry it
+# (RestartPreventExitStatus=3): the same password would only be refused again,
+# and retrying every 20 s gets the address rate-limited.
+LOGIN_REFUSED=3
 log() { printf 'pia-nm: %s\n' "$*"; }
 for c in curl jq wg nmcli; do command -v "$c" >/dev/null || die "$c not found"; done
 
@@ -48,12 +64,24 @@ curl_opt() {  # curl_opt <option> <value>: one config line, value quoted
 
 ks_on() { [[ $EUID == 0 ]] && command -v nft >/dev/null && nft list table $KS_TABLE >/dev/null 2>&1; }
 
+# The network's own DNS servers, as NetworkManager and resolv.conf know them.
+resolvers() {
+  { nmcli -g IP4.DNS device show 2>/dev/null | tr '|' '\n'
+    awk '$1 == "nameserver" {print $2}' /etc/resolv.conf 2>/dev/null
+  } | tr -d ' ' | grep -E "$IPV4" | grep -v '^127\.' | sort -u || true
+}
+
 # With the killswitch on, nothing leaves except through the tunnel, so PIA's own
-# API hosts are let through for a few minutes while a new key is fetched.
+# API hosts are let through for a few minutes while a new key is fetched (for
+# root only: the killswitch matches the API set on uid 0). The network's DNS
+# servers are let through for two minutes first, so the names resolve on any
+# network, not only the LAN recorded at install.
 allow_host() {
   ks_on || return 0
-  local ips
-  ips=$(getent ahostsv4 "$1" | awk '{print $1}' | sort -u | paste -sd, -)
+  local ips dns
+  dns=$(resolvers | paste -sd, -)
+  if [[ -n $dns ]]; then nft add element $KS_TABLE dns "{ $dns }"; fi
+  ips=$(getent ahostsv4 "$1" | awk '{print $1}' | grep -E "$IPV4" | sort -u | paste -sd, -) || true
   [[ -n $ips ]] || die "could not resolve $1"
   nft add element $KS_TABLE api "{ $ips }"
 }
@@ -67,7 +95,7 @@ servers() {
   json=${json%%$'\n'*}
   if [[ $EUID == 0 ]]; then
     install -d -m 755 "${REGIONS%/*}"
-    jq -r '.regions[] | select(.servers.wg) | "\(.id)\t\(.name)\t\(.country // "")"' <<<"$json" |
+    jq -r "$ROWS" <<<"$json" |
       sort -t $'\t' -k2 > "$REGIONS.tmp" && chmod 644 "$REGIONS.tmp" && mv "$REGIONS.tmp" "$REGIONS"
   fi
   printf '%s\n' "$json"
@@ -89,26 +117,39 @@ connect() {
   [[ -f $creds ]] && source "$creds"
   [[ -n ${PIA_USER:-} ]] || read -rp "PIA username: " PIA_USER
   [[ -n ${PIA_PASS:-} ]] || { read -rsp "PIA password: " PIA_PASS; echo; }
-  if [[ ! -f $CA ]]; then
-    allow_host raw.githubusercontent.com
-    curl -fsS --connect-timeout 15 -o "$CA" "$CA_URL" || die "could not fetch PIA's CA certificate"
-  fi
+  # Never downloaded: whoever could forge that one download could later
+  # impersonate PIA's key API and hand out their own server.
+  [[ $(sha256sum "$CA" 2>/dev/null) == "$CA_SHA256 "* ]] ||
+    die "$CA is missing or is not PIA's CA certificate: run install.sh again"
 
   # A stale profile routes everything into a dead tunnel, which would also cut
   # off the API calls below.
   down
 
   allow_host www.privateinternetaccess.com
-  local token
+  local login code token
   # form-string, not form: a value starting with @ or < would name a file.
-  token=$({ curl_opt form-string "username=$PIA_USER"; curl_opt form-string "password=$PIA_PASS"; } |
-    curl -fsS --connect-timeout 15 -X POST -K - "$TOKEN_URL" | jq -r '.token // empty')
-  [[ -n $token ]] || die "login failed (check username/password)"
+  # No -f: the HTTP status tells a wrong password from an unreachable API.
+  login=$({ curl_opt form-string "username=$PIA_USER"; curl_opt form-string "password=$PIA_PASS"; } |
+    curl -sS --connect-timeout 15 -X POST -K - -w '\n%{http_code}' "$TOKEN_URL") ||
+    die "could not reach PIA's login API"
+  code=${login##*$'\n'}
+  if [[ $code == 401 || $code == 403 ]]; then
+    printf 'pia-nm: %s\n' "login refused: check the PIA username and password (./install.sh --credentials)" >&2
+    exit $LOGIN_REFUSED
+  fi
+  [[ $code != 429 ]] || die "PIA is limiting login attempts (HTTP 429); trying again later"
+  token=$(jq -r '.token // empty' <<<"${login%$'\n'*}" 2>/dev/null) || true
+  [[ -n $token ]] || die "login failed (HTTP $code)"
 
   local wg_ip wg_cn region_name
-  read -r wg_ip wg_cn region_name < <(servers | jq -r --arg r "$region" \
-    '.regions[] | select(.id == $r) | "\(.servers.wg[0].ip) \(.servers.wg[0].cn) \(.name)"') || true
+  IFS=$'\t' read -r wg_ip wg_cn region_name < <(servers | jq -r --arg r "$region" \
+    '.regions[] | select(.id == $r) | [.servers.wg[0].ip, .servers.wg[0].cn, .name] | map(tostring) | @tsv') || true
   [[ -n ${wg_ip:-} && $wg_ip != null ]] || die "no WireGuard server for region '$region' (try --list)"
+  # These reach nft, curl and the WireGuard config: only what PIA sends.
+  [[ $wg_ip =~ $IPV4 && $wg_cn =~ ^[A-Za-z0-9.-]{1,253}$ ]] ||
+    die "unexpected server address in PIA's server list: '$wg_ip' '$wg_cn'"
+  region_name=$(tr -d '<>&"\\[:cntrl:]' <<<"$region_name")
   if ks_on; then nft add element $KS_TABLE servers "{ $wg_ip }"; fi
 
   umask 077
@@ -124,18 +165,28 @@ connect() {
     --connect-to "$wg_cn::$wg_ip:" --cacert "$CA" -K - \
     --data-urlencode "pubkey=$pub" "https://$wg_cn:1337/addKey")
   [[ $(jq -r '.status' <<<"$resp") == OK ]] || die "addKey refused: $resp"
+  local peer_ip server_key server_port dns
+  peer_ip=$(jq -r '.peer_ip' <<<"$resp")
+  server_key=$(jq -r '.server_key' <<<"$resp")
+  server_port=$(jq -r '.server_port' <<<"$resp")
+  dns=$(jq -r '.dns_servers[0]' <<<"$resp")
+  # Each goes on a line of the WireGuard config: a newline in one would add
+  # lines of its own.
+  [[ $peer_ip =~ $IPV4 && $server_key =~ ^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$ &&
+     $server_port =~ ^[0-9]{1,5}$ && ( $pihole == 1 || $dns =~ $IPV4 ) ]] ||
+    die "unexpected answer from addKey: $resp"
 
   # nmcli names the imported connection after the file, so it must be pia.conf.
   {
     echo "[Interface]"
-    echo "Address = $(jq -r '.peer_ip' <<<"$resp")"
+    echo "Address = $peer_ip"
     echo "PrivateKey = $priv"
-    [[ $pihole == 1 ]] || echo "DNS = $(jq -r '.dns_servers[0]' <<<"$resp")"
+    [[ $pihole == 1 ]] || echo "DNS = $dns"
     echo
     echo "[Peer]"
-    echo "PublicKey = $(jq -r '.server_key' <<<"$resp")"
+    echo "PublicKey = $server_key"
     echo "AllowedIPs = 0.0.0.0/0"
-    echo "Endpoint = $wg_ip:$(jq -r '.server_port' <<<"$resp")"
+    echo "Endpoint = $wg_ip:$server_port"
     echo "PersistentKeepalive = 25"
   } > "$work/$CONN.conf"
 
@@ -144,6 +195,13 @@ connect() {
   # Autoconnect stays off: pia-vpn.service decides when the tunnel is up, so
   # NetworkManager never brings up a profile whose key may have expired.
   nmcli connection modify "$CONN" connection.autoconnect no ipv6.method disabled
+  # PIA's DNS only: a negative priority drops every other connection's DNS
+  # servers, which glibc would otherwise fall back to through the LAN, and "~."
+  # sends every domain here under systemd-resolved. Not with --pihole, whose
+  # LAN DNS is the point.
+  if [[ $pihole != 1 ]]; then
+    nmcli connection modify "$CONN" ipv4.dns-priority -1 ipv4.dns-search "~."
+  fi
   nmcli connection up "$CONN" >/dev/null
 
   # Prove the tunnel works rather than trusting "activated".
@@ -169,7 +227,7 @@ load_env() {
 }
 
 case ${1:-} in
-  --list) servers | jq -r '.regions[] | select(.servers.wg) | "\(.id)\t\(.name)\t\(.country // "")"' | sort -t $'\t' -k2 ;;
+  --list) servers | jq -r "$ROWS" | sort -t $'\t' -k2 ;;
   --down) down ;;
   --set-region)
     id=${2:-}
@@ -204,7 +262,13 @@ case ${1:-} in
     fi
     # A server can keep handshaking yet pass nothing; ask the internet directly.
     for _ in 1 2; do
-      curl -fsS --max-time 5 -o /dev/null https://1.1.1.1 && exit 0
+      if curl -fsS --max-time 5 -o /dev/null https://1.1.1.1; then
+        # Healthy: refresh the bar's region list if it is old.
+        if [[ -z $(find "$REGIONS" -mmin -"$REGIONS_MAX_AGE_MIN" 2>/dev/null) ]]; then
+          ( servers >/dev/null ) || log "could not refresh the region list"
+        fi
+        exit 0
+      fi
       sleep 3
     done
     log "no traffic passes through the tunnel, reconnecting with a new key"

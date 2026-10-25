@@ -11,10 +11,14 @@ Type=oneshot
 RemainAfterExit=yes
 LoadCredentialEncrypted=pia:/etc/pia/credentials.cred
 ExecStart=/usr/local/bin/pia-nm connect
-ExecStop=/usr/local/bin/pia-nm --down
-# A failed connect leaves the killswitch on and tries again.
+# ExecStopPost, not ExecStop: systemd skips ExecStop when a start is stopped
+# before it finished, which would leave a tunnel up with no killswitch.
+ExecStopPost=/usr/local/bin/pia-nm --down
+# A failed connect leaves the killswitch on and tries again, except after a
+# refused login (pia-nm exits 3): the same password would be refused again.
 Restart=on-failure
 RestartSec=20
+RestartPreventExitStatus=3
 TimeoutStartSec=120
 
 [Install]

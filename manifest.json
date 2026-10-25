@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "jamesrblack.pia",
   "name": "PIA WireGuard (unofficial)",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "JamesRBlack",
   "license": "MIT",
   "description": "Unofficial Private Internet Access WireGuard widget: status, killswitch, server list with search and flags. Needs the system part from the repo's install.sh. Not affiliated with Private Internet Access.",
