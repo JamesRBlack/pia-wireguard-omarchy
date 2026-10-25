@@ -57,6 +57,14 @@ sudo true || { echo "sudo is needed for wg, nft and journalctl"; exit 1; }
 ( while sleep 50; do sudo -n true 2>/dev/null || exit; done ) & KEEPALIVE=$!
 trap 'kill $KEEPALIVE 2>/dev/null' EXIT
 
+# A connect in progress would be caught half-way (an old profile, no tunnel
+# yet): wait for it to finish first.
+if [[ $(systemctl is-active pia-vpn) == activating ]]; then
+  echo "pia-vpn is connecting; waiting for it to finish (up to 2 minutes)..."
+  wait_for 120 bash -c '[[ $(systemctl is-active pia-vpn) != activating ]]'
+  sleep 2
+fi
+
 # ---------------------------------------------------------------------------
 section "system"
 echo "  kernel $(uname -r); $(systemctl --version | head -1); $(nft --version 2>/dev/null)"
