@@ -173,8 +173,7 @@ Start at boot, with the killswitch up before the network:
 sudo systemctl enable pia-killswitch pia-vpn
 ```
 
-To stop connecting at boot again (`pia.env` has no setting for this; it is
-only whether the units are enabled):
+To stop connecting at boot again:
 
 ```sh
 sudo systemctl disable pia-vpn pia-killswitch
