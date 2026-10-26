@@ -173,6 +173,18 @@ Start at boot, with the killswitch up before the network:
 sudo systemctl enable pia-killswitch pia-vpn
 ```
 
+To stop connecting at boot again (`pia.env` has no setting for this; it is
+only whether the units are enabled):
+
+```sh
+sudo systemctl disable pia-vpn pia-killswitch
+```
+
+`pia-toggle` and the bar still connect on demand. To keep traffic blocked from
+boot until you connect, disable only `pia-vpn` and leave `pia-killswitch`
+enabled. The watchdog timer can stay enabled: it does nothing unless
+`pia-vpn` is running, so it never connects at boot by itself.
+
 ## Change server
 
 No password needed; the killswitch stays up across the switch, and switching
