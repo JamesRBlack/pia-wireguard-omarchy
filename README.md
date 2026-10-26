@@ -221,7 +221,15 @@ curl -4 -s --max-time 5 https://ifconfig.me || echo BLOCKED   # watchdog reconne
 
 ```sh
 tests/run.sh        # 113 regression tests; nothing touches the real system
+tests/live-check.sh # a report on the installed VPN, safe to paste into an issue
 ```
+
+`tests/live-check.sh` checks a real installation: the installed files against
+the repository, the tunnel and its handshake, which link answers DNS, IPv6 and
+the killswitch rules. With `--full` it also reconnects while watching curl's
+arguments for credentials, drops the tunnel, switches region and back, and
+turns the VPN off and on (about 3 minutes, asks first). The report leaves out
+the password, token, keys, host name and real IP address.
 
 They run the scripts against stand-in commands, a fixture of PIA's region
 list, and private mount/network namespaces for `pia-nm` and the killswitch
